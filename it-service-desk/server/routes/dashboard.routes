@@ -1,0 +1,187 @@
+/**
+ * IT Service Desk - Dashboard Routes
+ * 
+ * This file defines all dashboard-related routes for the application.
+ * It handles analytics, statistics, metrics, and other dashboard data operations.
+ */
+const express = require('express');
+const router = express.Router();
+const dashboardController = require('../controllers/dashboard.controller');
+const authMiddleware = require('../middleware/auth.middleware');
+const roleMiddleware = require('../middleware/role.middleware');
+const { validateDateRange } = require('../middleware/validation.middleware');
+
+/**
+ * @route   GET /api/dashboard
+ * @desc    Get complete dashboard data including all metrics and charts
+ * @access  Private (Admin, Manager)
+ */
+router.get(
+  '/',
+  authMiddleware,
+  roleMiddleware(['admin', 'manager']),
+  validateDateRange,
+  dashboardController.getDashboardData
+);
+
+/**
+ * @route   GET /api/dashboard/statistics
+ * @desc    Get general statistics for dashboard (counts, averages)
+ * @access  Private (All authenticated users)
+ */
+router.get(
+  '/statistics',
+  authMiddleware,
+  validateDateRange,
+  dashboardController.getStatistics
+);
+
+/**
+ * @route   GET /api/dashboard/incidents-by-status
+ * @desc    Get incidents grouped by status for pie/bar chart
+ * @access  Private (All authenticated users)
+ */
+router.get(
+  '/incidents-by-status',
+  authMiddleware,
+  dashboardController.getIncidentsByStatus
+);
+
+/**
+ * @route   GET /api/dashboard/incidents-by-priority
+ * @desc    Get incidents grouped by priority for pie/bar chart
+ * @access  Private (All authenticated users)
+ */
+router.get(
+  '/incidents-by-priority',
+  authMiddleware,
+  dashboardController.getIncidentsByPriority
+);
+
+/**
+ * @route   GET /api/dashboard/equipment-distribution
+ * @desc    Get equipment distribution by type/category
+ * @access  Private (All authenticated users)
+ */
+router.get(
+  '/equipment-distribution',
+  authMiddleware,
+  dashboardController.getEquipmentTypeDistribution
+);
+
+/**
+ * @route   GET /api/dashboard/equipment-age
+ * @desc    Get equipment age distribution
+ * @access  Private (Admin, Manager)
+ */
+router.get(
+  '/equipment-age',
+  authMiddleware,
+  roleMiddleware(['admin', 'manager']),
+  dashboardController.getEquipmentAgeDistribution
+);
+
+/**
+ * @route   GET /api/dashboard/incident-trends
+ * @desc    Get incident trends over time (daily, weekly, monthly)
+ * @access  Private (All authenticated users)
+ */
+router.get(
+  '/incident-trends',
+  authMiddleware,
+  dashboardController.getIncidentTrends
+);
+
+/**
+ * @route   GET /api/dashboard/resolution-time
+ * @desc    Get average resolution time trends
+ * @access  Private (Admin, Manager)
+ */
+router.get(
+  '/resolution-time',
+  authMiddleware,
+  roleMiddleware(['admin', 'manager']),
+  dashboardController.getResolutionTimeTrends
+);
+
+/**
+ * @route   GET /api/dashboard/top-issues
+ * @desc    Get top issue categories or types
+ * @access  Private (All authenticated users)
+ */
+router.get(
+  '/top-issues',
+  authMiddleware,
+  dashboardController.getTopIssueCategories
+);
+
+/**
+ * @route   GET /api/dashboard/user-performance
+ * @desc    Get user performance metrics (for managers/admins)
+ * @access  Private (Admin, Manager)
+ */
+router.get(
+  '/user-performance',
+  authMiddleware,
+  roleMiddleware(['admin', 'manager']),
+  dashboardController.getUserPerformanceMetrics
+);
+
+/**
+ * @route   GET /api/dashboard/sla-compliance
+ * @desc    Get SLA compliance metrics
+ * @access  Private (Admin, Manager)
+ */
+router.get(
+  '/sla-compliance',
+  authMiddleware,
+  roleMiddleware(['admin', 'manager']),
+  dashboardController.getSLAComplianceMetrics
+);
+
+/**
+ * @route   POST /api/dashboard/reports
+ * @desc    Generate dashboard report (PDF/Excel)
+ * @access  Private (Admin, Manager)
+ */
+router.post(
+  '/reports',
+  authMiddleware,
+  roleMiddleware(['admin', 'manager']),
+  dashboardController.generateReport
+);
+
+/**
+ * @route   GET /api/dashboard/recent-incidents
+ * @desc    Get recent incidents for dashboard
+ * @access  Private (All authenticated users)
+ */
+router.get(
+  '/recent-incidents',
+  authMiddleware,
+  dashboardController.getRecentIncidents
+);
+
+/**
+ * @route   GET /api/dashboard/critical-issues
+ * @desc    Get critical/high priority open issues
+ * @access  Private (All authenticated users)
+ */
+router.get(
+  '/critical-issues',
+  authMiddleware,
+  dashboardController.getCriticalIssues
+);
+
+/**
+ * @route   GET /api/dashboard/equipment-status
+ * @desc    Get equipment status summary
+ * @access  Private (All authenticated users)
+ */
+router.get(
+  '/equipment-status',
+  authMiddleware,
+  dashboardController.getEquipmentStatusSummary
+);
+
+module.exports = router;

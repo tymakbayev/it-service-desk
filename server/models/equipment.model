@@ -1,0 +1,389 @@
+const mongoose = require('mongoose');
+const Schema = mongoose.Schema;
+
+/**
+ * Equipment History Schema - Embedded document for tracking equipment history
+ */
+const EquipmentHistorySchema = new Schema({
+  action: {
+    type: String,
+    required: true,
+    enum: ['created', 'updated', 'assigned', 'unassigned', 'maintenance', 'retired']
+  },
+  timestamp: {
+    type: Date,
+    default: Date.now
+  },
+  performedBy: {
+    type: Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  details: {
+    type: Object
+  },
+  previousState: {
+    type: Object
+  },
+  newState: {
+    type: Object
+  },
+  notes: {
+    type: String
+  }
+});
+
+/**
+ * Equipment Schema
+ */
+const EquipmentSchema = new Schema({
+  name: {
+    type: String,
+    required: [true, 'Equipment name is required'],
+    trim: true
+  },
+  type: {
+    type: String,
+    required: [true, 'Equipment type is required'],
+    enum: ['laptop', 'desktop', 'server', 'printer', 'network', 'mobile', 'peripheral', 'other'],
+    index: true
+  },
+  serialNumber: {
+    type: String,
+    required: [true, 'Serial number is required'],
+    unique: true,
+    trim: true
+  },
+  model: {
+    type: String,
+    trim: true
+  },
+  manufacturer: {
+    type: String,
+    trim: true
+  },
+  purchaseDate: {
+    type: Date
+  },
+  warrantyExpiration: {
+    type: Date
+  },
+  status: {
+    type: String,
+    enum: ['available', 'assigned', 'maintenance', 'retired', 'lost'],
+    default: 'available',
+    index: true
+  },
+  location: {
+    type: String,
+    trim: true
+  },
+  assignedTo: {
+    type: Schema.Types.ObjectId,
+    ref: 'User',
+    index: true
+  },
+  assignmentDate: {
+    type: Date
+  },
+  ipAddress: {
+    type: String,
+    trim: true,
+    validate: {
+      validator: function(v) {
+        // Simple IP validation regex
+        return !v || /^(\d{1,3}\.){3}\d{1,3}$/.test(v);
+      },
+      message: props => `${props.value} is not a valid IP address!`
+    }
+  },
+  macAddress: {
+    type: String,
+    trim: true,
+    validate: {
+      validator: function(v) {
+        // Simple MAC address validation regex
+        return !v || /^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/.test(v);
+      },
+      message: props => `${props.value} is not a valid MAC address!`
+    }
+  },
+  operatingSystem: {
+    type: String,
+    trim: true
+  },
+  specifications: {
+    cpu: String,
+    ram: String,
+    storage: String,
+    display: String,
+    additionalDetails: String
+  },
+  notes: {
+    type: String,
+    trim: true
+  },
+  maintenanceHistory: [
+    {
+      date: Date,
+      type: {
+        type: String,
+        enum: ['repair', 'upgrade', 'inspection', 'cleaning', 'other']
+      },
+      description: String,
+      cost: Number,
+      performedBy: {
+        type: Schema.Types.ObjectId,
+        ref: 'User'
+      },
+      vendor: String,
+      attachments: [String],
+      notes: String
+    }
+  ],
+  attachments: [
+    {
+      filename: String,
+      originalName: String,
+      path: String,
+      mimetype: String,
+      size: Number,
+      uploadedAt: {
+        type: Date,
+        default: Date.now
+      },
+      uploadedBy: {
+        type: Schema.Types.ObjectId,
+        ref: 'User'
+      }
+    }
+  ],
+  history: [EquipmentHistorySchema],
+  createdBy: {
+    type: Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  createdAt: {
+    type: Date,
+    default: Date.now
+  },
+  updatedAt: {
+    type: Date,
+    default: Date.now
+  }
+}, {
+  timestamps: true
+});
+
+// Indexes for common queries
+EquipmentSchema.index({ name: 'text', serialNumber: 'text', model: 'text', manufacturer: 'text' });
+EquipmentSchema.index({ createdAt: -1 });
+EquipmentSchema.index({ purchaseDate: -1 });
+EquipmentSchema.index({ warrantyExpiration: 1 });
+
+/**
+ * Pre-save middleware to update timestamps
+ */
+EquipmentSchema.pre('save', function(next) {
+  this.updatedAt = Date.now();
+  next();
+});
+
+/**
+ * Add equipment history entry when equipment is modified
+ */
+EquipmentSchema.methods.addHistoryEntry = function(action, user, details = {}, notes = '') {
+  const historyEntry = {
+    action,
+    performedBy: user._id,
+    timestamp: new Date(),
+    details,
+    notes
+  };
+  
+  this.history.push(historyEntry);
+  return this.save();
+};
+
+/**
+ * Assign equipment to a user
+ */
+EquipmentSchema.methods.assignToUser = function(userId, assignedBy, notes = '') {
+  const previousState = {
+    status: this.status,
+    assignedTo: this.assignedTo
+  };
+  
+  this.assignedTo = userId;
+  this.assignmentDate = new Date();
+  this.status = 'assigned';
+  
+  const newState = {
+    status: this.status,
+    assignedTo: this.assignedTo,
+    assignmentDate: this.assignmentDate
+  };
+  
+  this.history.push({
+    action: 'assigned',
+    performedBy: assignedBy,
+    timestamp: new Date(),
+    previousState,
+    newState,
+    notes
+  });
+  
+  return this.save();
+};
+
+/**
+ * Unassign equipment from a user
+ */
+EquipmentSchema.methods.unassignFromUser = function(unassignedBy, notes = '') {
+  const previousState = {
+    status: this.status,
+    assignedTo: this.assignedTo,
+    assignmentDate: this.assignmentDate
+  };
+  
+  this.assignedTo = null;
+  this.assignmentDate = null;
+  this.status = 'available';
+  
+  const newState = {
+    status: this.status,
+    assignedTo: null,
+    assignmentDate: null
+  };
+  
+  this.history.push({
+    action: 'unassigned',
+    performedBy: unassignedBy,
+    timestamp: new Date(),
+    previousState,
+    newState,
+    notes
+  });
+  
+  return this.save();
+};
+
+/**
+ * Add maintenance record
+ */
+EquipmentSchema.methods.addMaintenanceRecord = function(maintenanceData, performedBy) {
+  const previousStatus = this.status;
+  
+  // Add maintenance record
+  this.maintenanceHistory.push({
+    ...maintenanceData,
+    date: maintenanceData.date || new Date(),
+    performedBy: performedBy
+  });
+  
+  // Update status if equipment is in maintenance
+  if (maintenanceData.updateStatus && maintenanceData.updateStatus === true) {
+    this.status = 'maintenance';
+  }
+  
+  // Add to history
+  this.history.push({
+    action: 'maintenance',
+    performedBy: performedBy,
+    timestamp: new Date(),
+    previousState: { status: previousStatus },
+    newState: { status: this.status },
+    details: maintenanceData,
+    notes: maintenanceData.notes
+  });
+  
+  return this.save();
+};
+
+/**
+ * Mark equipment as retired
+ */
+EquipmentSchema.methods.retire = function(retiredBy, reason = '') {
+  const previousState = {
+    status: this.status
+  };
+  
+  this.status = 'retired';
+  
+  this.history.push({
+    action: 'retired',
+    performedBy: retiredBy,
+    timestamp: new Date(),
+    previousState,
+    newState: { status: 'retired' },
+    notes: reason
+  });
+  
+  return this.save();
+};
+
+/**
+ * Static method to find equipment by various criteria
+ */
+EquipmentSchema.statics.findByFilters = function(filters = {}) {
+  const query = {};
+  
+  if (filters.status) query.status = filters.status;
+  if (filters.type) query.type = filters.type;
+  if (filters.assignedTo) query.assignedTo = filters.assignedTo;
+  if (filters.search) {
+    query.$or = [
+      { name: { $regex: filters.search, $options: 'i' } },
+      { serialNumber: { $regex: filters.search, $options: 'i' } },
+      { model: { $regex: filters.search, $options: 'i' } },
+      { manufacturer: { $regex: filters.search, $options: 'i' } }
+    ];
+  }
+  
+  if (filters.warrantyExpiring) {
+    const thresholdDate = new Date();
+    thresholdDate.setDate(thresholdDate.getDate() + parseInt(filters.warrantyExpiring));
+    query.warrantyExpiration = { $lte: thresholdDate, $gte: new Date() };
+  }
+  
+  return this.find(query);
+};
+
+/**
+ * Virtual for equipment age in days
+ */
+EquipmentSchema.virtual('ageInDays').get(function() {
+  if (!this.purchaseDate) return null;
+  const now = new Date();
+  const diffTime = Math.abs(now - this.purchaseDate);
+  return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+});
+
+/**
+ * Virtual for warranty status
+ */
+EquipmentSchema.virtual('warrantyStatus').get(function() {
+  if (!this.warrantyExpiration) return 'unknown';
+  
+  const now = new Date();
+  if (this.warrantyExpiration < now) {
+    return 'expired';
+  }
+  
+  // Check if warranty expires in the next 30 days
+  const thirtyDaysFromNow = new Date();
+  thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
+  
+  if (this.warrantyExpiration < thirtyDaysFromNow) {
+    return 'expiring-soon';
+  }
+  
+  return 'active';
+});
+
+// Set toJSON option to include virtuals
+EquipmentSchema.set('toJSON', { virtuals: true });
+EquipmentSchema.set('toObject', { virtuals: true });
+
+module.exports = mongoose.model('Equipment', EquipmentSchema);

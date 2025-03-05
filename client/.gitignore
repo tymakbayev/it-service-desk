@@ -1,0 +1,363 @@
+# Node.js dependencies and build artifacts
+node_modules/
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+package-lock.json
+yarn.lock
+.pnpm-debug.log
+.npm
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
+.pnp.*
+
+# Build directories
+/build
+/dist
+/.next
+/.nuxt
+/.cache
+/out
+
+# Environment variables and secrets
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+.env.staging
+.env.development.local
+.env.test.local
+.env.production.local
+*.env
+
+# Testing
+/coverage
+/.nyc_output
+/cypress/screenshots
+/cypress/videos
+/test-results
+/test-reports
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# Editor and IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.history/
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Temporary files
+/tmp
+/temp
+*.tmp
+*.temp
+
+# Cache
+.eslintcache
+.stylelintcache
+.sass-cache
+.cache/
+.parcel-cache
+
+# Generated files
+/src/generated
+/public/assets/generated
+/public/static/generated
+
+# Dependency directories
+jspm_packages/
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Optional npm cache directory
+.npm
+
+# Optional eslint cache
+.eslintcache
+
+# Optional stylelint cache
+.stylelintcache
+
+# Microbundle cache
+.rpt2_cache/
+.rts2_cache_cjs/
+.rts2_cache_es/
+.rts2_cache_umd/
+
+# Optional REPL history
+.node_repl_history
+
+# Output of 'npm pack'
+*.tgz
+
+# Yarn Integrity file
+.yarn-integrity
+
+# Local configuration files
+config/local*
+local.js
+local.json
+
+# Debug files
+.debug
+debug.log
+debug/
+
+# Webpack generated files
+.webpack/
+
+# Storybook
+/storybook-static
+
+# PWA files
+**/public/workbox-*.js
+**/public/sw.js
+**/public/service-worker.js
+
+# Sentry
+.sentryclirc
+sentry.properties
+
+# Bundle analyzer
+/analyze/
+stats.json
+
+# Miscellaneous
+.DS_Store
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.directory
+*.bak
+*.orig
+*.rej
+*.old
+*.pid
+*.seed
+*.pid.lock
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Certificates and keys
+*.pem
+*.key
+*.crt
+*.cer
+*.der
+*.p7b
+*.p7c
+*.pfx
+*.p12
+
+# Local Netlify folder
+.netlify
+
+# Local Vercel folder
+.vercel
+
+# Cloudflare
+.cloudflare
+
+# Firebase
+.firebase/
+firebase-debug.log
+firebase-debug.*.log
+
+# Capacitor
+/ios/App/build/
+/ios/App/Pods/
+/ios/capacitor-cordova-ios-plugins/
+/android/app/build/
+/android/build/
+/android/capacitor-cordova-android-plugins/
+
+# Cordova
+/www/
+/plugins/
+/platforms/
+
+# Electron
+/electron-dist
+/electron-builder.yml
+/dist_electron
+
+# Serverless
+.serverless/
+
+# Amplify
+amplify/\#current-cloud-backend
+amplify/.config/local-*
+amplify/logs
+amplify/mock-data
+amplify/backend/amplify-meta.json
+amplify/backend/awscloudformation
+amplify/backend/.temp
+build/
+dist/
+node_modules/
+aws-exports.js
+awsconfiguration.json
+amplifyconfiguration.json
+amplifyconfiguration.dart
+amplify-build-config.json
+amplify-gradle-config.json
+amplifytools.xcconfig
+.secret-*
+
+# Expo
+.expo/
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
+web-build/
+
+# React Native
+.expo/
+__generated__/
+.watchmanconfig
+
+# Next.js
+.next/
+out/
+.vercel
+
+# Gatsby
+.cache/
+public
+
+# Remix
+.cache/
+build/
+public/build
+
+# Vite
+dist/
+dist-ssr/
+
+# Rollup
+.rollup.cache/
+
+# Webpack
+.webpack/
+
+# Browserslist
+browserslist
+
+# Lighthouse
+.lighthouseci/
+
+# Tailwind
+.tailwind/
+
+# Babel
+.babel-cache/
+
+# ESLint
+.eslintcache
+
+# Stylelint
+.stylelintcache
+
+# Prettier
+.prettierignore
+
+# Husky
+.husky/_/
+
+# Lint-staged
+.lint-staged.config.js
+
+# Storybook
+storybook-static/
+
+# Chromatic
+chromatic.log
+.chromatic/
+
+# Vitest
+vitest.config.ts.timestamp-*
+
+# Playwright
+test-results/
+playwright-report/
+playwright/.cache/
+
+# Cypress
+cypress/videos/
+cypress/screenshots/
+cypress/downloads/
+
+# Turborepo
+.turbo/
+
+# Nx
+.nx/
+
+# Docusaurus
+.docusaurus/
+
+# Astro
+.astro/
+
+# SvelteKit
+.svelte-kit/
+
+# Deno
+.deno/
+
+# Bun
+.bun/
+
+# Tauri
+target/
+
+# Vitepress
+.vitepress/dist
+.vitepress/cache

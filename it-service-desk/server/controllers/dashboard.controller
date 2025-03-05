@@ -1,0 +1,498 @@
+const Incident = require('../models/incident.model');
+const Equipment = require('../models/equipment.model');
+const User = require('../models/user.model');
+const Report = require('../models/report.model');
+const dashboardService = require('../services/dashboard.service');
+const { formatDateRange } = require('../utils/helpers');
+const { Types } = require('mongoose');
+
+/**
+ * Dashboard Controller
+ * Handles all dashboard-related operations including statistics, analytics, and reports
+ */
+class DashboardController {
+  /**
+   * Get general statistics for dashboard
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   */
+  async getStatistics(req, res) {
+    try {
+      const { startDate, endDate } = req.query;
+      let dateFilter = {};
+      
+      if (startDate && endDate) {
+        dateFilter = {
+          createdAt: {
+            $gte: new Date(startDate),
+            $lte: new Date(endDate)
+          }
+        };
+      }
+
+      // Get counts for various entities
+      const totalIncidents = await Incident.countDocuments(dateFilter);
+      const openIncidents = await Incident.countDocuments({ 
+        ...dateFilter,
+        status: { $in: ['open', 'in-progress'] } 
+      });
+      const resolvedIncidents = await Incident.countDocuments({ 
+        ...dateFilter,
+        status: 'resolved' 
+      });
+      const totalEquipment = await Equipment.countDocuments(dateFilter);
+      const availableEquipment = await Equipment.countDocuments({ 
+        ...dateFilter,
+        status: 'available' 
+      });
+      const assignedEquipment = await Equipment.countDocuments({ 
+        ...dateFilter,
+        status: 'assigned' 
+      });
+      const totalUsers = await User.countDocuments();
+      
+      // Get average resolution time for incidents
+      const resolvedIncidentsData = await Incident.find(
+        { 
+          ...dateFilter,
+          status: 'resolved', 
+          resolvedAt: { $exists: true }, 
+          createdAt: { $exists: true } 
+        },
+        { resolvedAt: 1, createdAt: 1 }
+      );
+      
+      let totalResolutionTime = 0;
+      resolvedIncidentsData.forEach(incident => {
+        const resolutionTime = incident.resolvedAt - incident.createdAt;
+        totalResolutionTime += resolutionTime;
+      });
+      
+      const avgResolutionTime = resolvedIncidentsData.length > 0 
+        ? Math.floor(totalResolutionTime / resolvedIncidentsData.length / (1000 * 60 * 60)) // in hours
+        : 0;
+      
+      // Get recent incidents
+      const recentIncidents = await Incident.find(dateFilter)
+        .sort({ createdAt: -1 })
+        .limit(5)
+        .populate('reportedBy', 'firstName lastName')
+        .populate('assignedTo', 'firstName lastName')
+        .populate('equipment', 'name type');
+      
+      // Get incidents by priority
+      const incidentsByPriority = await Incident.aggregate([
+        { $match: dateFilter },
+        { $group: { _id: '$priority', count: { $sum: 1 } } },
+        { $sort: { _id: 1 } }
+      ]);
+
+      return res.status(200).json({
+        success: true,
+        data: {
+          incidents: {
+            total: totalIncidents,
+            open: openIncidents,
+            resolved: resolvedIncidents,
+            avgResolutionTime
+          },
+          equipment: {
+            total: totalEquipment,
+            available: availableEquipment,
+            assigned: assignedEquipment
+          },
+          users: {
+            total: totalUsers
+          },
+          recentIncidents,
+          incidentsByPriority: incidentsByPriority.map(item => ({
+            priority: item._id,
+            count: item.count
+          }))
+        }
+      });
+    } catch (error) {
+      console.error('Error fetching dashboard statistics:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to fetch dashboard statistics',
+        error: error.message
+      });
+    }
+  }
+  
+  /**
+   * Get complete dashboard data including all metrics and charts
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   */
+  async getDashboardData(req, res) {
+    try {
+      const { startDate, endDate } = req.query;
+      
+      // Get statistics
+      const statistics = await dashboardService.getStatistics(startDate, endDate);
+      
+      // Get incidents by status
+      const incidentsByStatus = await dashboardService.getIncidentsByStatus(startDate, endDate);
+      
+      // Get incidents by priority
+      const incidentsByPriority = await dashboardService.getIncidentsByPriority(startDate, endDate);
+      
+      // Get equipment by type
+      const equipmentByType = await dashboardService.getEquipmentByType();
+      
+      // Get equipment by status
+      const equipmentByStatus = await dashboardService.getEquipmentByStatus();
+      
+      // Get incident trends (last 12 months)
+      const incidentTrends = await dashboardService.getIncidentTrends(startDate, endDate);
+      
+      // Get top issue categories
+      const topIssueCategories = await dashboardService.getTopIssueCategories(5);
+      
+      // Get performance metrics
+      const performanceMetrics = await dashboardService.getPerformanceMetrics(startDate, endDate);
+      
+      return res.status(200).json({
+        success: true,
+        data: {
+          statistics,
+          charts: {
+            incidentsByStatus,
+            incidentsByPriority,
+            equipmentByType,
+            equipmentByStatus,
+            incidentTrends,
+            topIssueCategories
+          },
+          performanceMetrics
+        }
+      });
+    } catch (error) {
+      console.error('Error fetching dashboard data:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to fetch dashboard data',
+        error: error.message
+      });
+    }
+  }
+  
+  /**
+   * Get incidents grouped by status
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   */
+  async getIncidentsByStatus(req, res) {
+    try {
+      const { startDate, endDate, period = '30days' } = req.query;
+      
+      const incidentsByStatus = await dashboardService.getIncidentsByStatus(startDate, endDate, period);
+      
+      return res.status(200).json({
+        success: true,
+        data: incidentsByStatus
+      });
+    } catch (error) {
+      console.error('Error fetching incidents by status:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to fetch incidents by status',
+        error: error.message
+      });
+    }
+  }
+  
+  /**
+   * Get incidents grouped by priority
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   */
+  async getIncidentsByPriority(req, res) {
+    try {
+      const { startDate, endDate } = req.query;
+      
+      const incidentsByPriority = await dashboardService.getIncidentsByPriority(startDate, endDate);
+      
+      return res.status(200).json({
+        success: true,
+        data: incidentsByPriority
+      });
+    } catch (error) {
+      console.error('Error fetching incidents by priority:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to fetch incidents by priority',
+        error: error.message
+      });
+    }
+  }
+  
+  /**
+   * Get equipment distribution by type
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   */
+  async getEquipmentDistribution(req, res) {
+    try {
+      const equipmentByType = await dashboardService.getEquipmentByType();
+      
+      return res.status(200).json({
+        success: true,
+        data: equipmentByType
+      });
+    } catch (error) {
+      console.error('Error fetching equipment distribution:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to fetch equipment distribution',
+        error: error.message
+      });
+    }
+  }
+  
+  /**
+   * Get incident trends over time
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   */
+  async getIncidentTrends(req, res) {
+    try {
+      const { period = 'month' } = req.query;
+      
+      if (!['week', 'month', 'year'].includes(period)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid period parameter. Must be one of: week, month, year'
+        });
+      }
+      
+      const incidentTrends = await dashboardService.getIncidentTrends(null, null, period);
+      
+      return res.status(200).json({
+        success: true,
+        data: incidentTrends
+      });
+    } catch (error) {
+      console.error('Error fetching incident trends:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to fetch incident trends',
+        error: error.message
+      });
+    }
+  }
+  
+  /**
+   * Get equipment age distribution
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   */
+  async getEquipmentAgeDistribution(req, res) {
+    try {
+      const equipmentAge = await dashboardService.getEquipmentAgeDistribution();
+      
+      return res.status(200).json({
+        success: true,
+        data: equipmentAge
+      });
+    } catch (error) {
+      console.error('Error fetching equipment age distribution:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to fetch equipment age distribution',
+        error: error.message
+      });
+    }
+  }
+  
+  /**
+   * Get top issue categories
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   */
+  async getTopIssueCategories(req, res) {
+    try {
+      const { limit = 5 } = req.query;
+      
+      const topIssues = await dashboardService.getTopIssueCategories(parseInt(limit));
+      
+      return res.status(200).json({
+        success: true,
+        data: topIssues
+      });
+    } catch (error) {
+      console.error('Error fetching top issue categories:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to fetch top issue categories',
+        error: error.message
+      });
+    }
+  }
+  
+  /**
+   * Generate dashboard report
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   */
+  async generateReport(req, res) {
+    try {
+      const { reportType, format, startDate, endDate } = req.body;
+      
+      if (!reportType || !format) {
+        return res.status(400).json({
+          success: false,
+          message: 'Report type and format are required'
+        });
+      }
+      
+      // Validate report type
+      const validReportTypes = ['incidents', 'equipment', 'performance', 'comprehensive'];
+      if (!validReportTypes.includes(reportType)) {
+        return res.status(400).json({
+          success: false,
+          message: `Invalid report type. Must be one of: ${validReportTypes.join(', ')}`
+        });
+      }
+      
+      // Validate format
+      const validFormats = ['pdf', 'excel', 'csv'];
+      if (!validFormats.includes(format)) {
+        return res.status(400).json({
+          success: false,
+          message: `Invalid format. Must be one of: ${validFormats.join(', ')}`
+        });
+      }
+      
+      // Generate the report
+      const report = await dashboardService.generateReport({
+        reportType,
+        format,
+        startDate,
+        endDate,
+        userId: req.user.id
+      });
+      
+      // Save report metadata to database
+      const newReport = new Report({
+        name: `${reportType.charAt(0).toUpperCase() + reportType.slice(1)} Report`,
+        type: reportType,
+        format,
+        dateRange: formatDateRange(startDate, endDate),
+        generatedBy: req.user.id,
+        filePath: report.filePath
+      });
+      
+      await newReport.save();
+      
+      // Return appropriate response based on format
+      if (format === 'pdf') {
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename=${report.filename}`);
+        return res.send(report.buffer);
+      } else if (format === 'excel') {
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename=${report.filename}`);
+        return res.send(report.buffer);
+      } else if (format === 'csv') {
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', `attachment; filename=${report.filename}`);
+        return res.send(report.buffer);
+      }
+      
+      return res.status(200).json({
+        success: true,
+        message: 'Report generated successfully',
+        data: {
+          reportId: newReport._id,
+          reportName: newReport.name,
+          downloadUrl: `/api/reports/download/${newReport._id}`
+        }
+      });
+    } catch (error) {
+      console.error('Error generating report:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to generate report',
+        error: error.message
+      });
+    }
+  }
+  
+  /**
+   * Get performance metrics
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   */
+  async getPerformanceMetrics(req, res) {
+    try {
+      const { startDate, endDate } = req.query;
+      
+      const performanceMetrics = await dashboardService.getPerformanceMetrics(startDate, endDate);
+      
+      return res.status(200).json({
+        success: true,
+        data: performanceMetrics
+      });
+    } catch (error) {
+      console.error('Error fetching performance metrics:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to fetch performance metrics',
+        error: error.message
+      });
+    }
+  }
+  
+  /**
+   * Get user activity metrics
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   */
+  async getUserActivityMetrics(req, res) {
+    try {
+      const { startDate, endDate } = req.query;
+      
+      const userActivity = await dashboardService.getUserActivityMetrics(startDate, endDate);
+      
+      return res.status(200).json({
+        success: true,
+        data: userActivity
+      });
+    } catch (error) {
+      console.error('Error fetching user activity metrics:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to fetch user activity metrics',
+        error: error.message
+      });
+    }
+  }
+  
+  /**
+   * Get equipment status distribution
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   */
+  async getEquipmentStatusDistribution(req, res) {
+    try {
+      const equipmentByStatus = await dashboardService.getEquipmentByStatus();
+      
+      return res.status(200).json({
+        success: true,
+        data: equipmentByStatus
+      });
+    } catch (error) {
+      console.error('Error fetching equipment status distribution:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to fetch equipment status distribution',
+        error: error.message
+      });
+    }
+  }
+}
+
+module.exports = new DashboardController();

@@ -1,0 +1,181 @@
+/**
+ * Middleware для логирования HTTP-запросов
+ * Отслеживает входящие запросы и записывает информацию о них в логи
+ * 
+ * @module middleware/request.logger
+ */
+const winston = require('winston');
+const logger = require('../config/winston');
+const constants = require('../utils/constants');
+const { v4: uuidv4 } = require('uuid');
+
+/**
+ * Middleware для логирования HTTP-запросов
+ * 
+ * Функционал:
+ * - Генерирует уникальный ID для каждого запроса
+ * - Логирует информацию о начале запроса (метод, URL, IP, user-agent)
+ * - Измеряет время выполнения запроса
+ * - Логирует информацию о завершении запроса (статус, время выполнения)
+ * - Добавляет requestId в объект запроса для использования в других частях приложения
+ * 
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {Function} next - Express next middleware function
+ */
+const requestLogger = (req, res, next) => {
+  // Генерируем уникальный ID для запроса
+  const requestId = uuidv4();
+  req.requestId = requestId;
+  
+  // Получаем информацию о запросе
+  const { method, originalUrl, ip } = req;
+  const userAgent = req.get('user-agent') || 'unknown';
+  const userId = req.user ? req.user.id : 'unauthenticated';
+  
+  // Фиксируем время начала запроса
+  const startTime = Date.now();
+  
+  // Логируем информацию о начале запроса
+  logger.info(`Request started: ${method} ${originalUrl}`, {
+    metadata: {
+      requestId,
+      method,
+      path: originalUrl,
+      ip,
+      userAgent,
+      userId
+    }
+  });
+  
+  // Создаем функцию для логирования завершения запроса
+  const logFinish = () => {
+    // Вычисляем время выполнения запроса
+    const duration = Date.now() - startTime;
+    const statusCode = res.statusCode;
+    
+    // Определяем уровень логирования в зависимости от статус-кода
+    let logLevel = 'info';
+    if (statusCode >= 500) {
+      logLevel = 'error';
+    } else if (statusCode >= 400) {
+      logLevel = 'warn';
+    }
+    
+    // Логируем информацию о завершении запроса
+    logger[logLevel](`Request completed: ${method} ${originalUrl} ${statusCode} ${duration}ms`, {
+      metadata: {
+        requestId,
+        method,
+        path: originalUrl,
+        statusCode,
+        duration,
+        ip,
+        userId
+      }
+    });
+  };
+  
+  // Добавляем обработчики событий для логирования завершения запроса
+  res.on('finish', logFinish);
+  res.on('close', () => {
+    if (!res.finished) {
+      logger.warn(`Request aborted: ${method} ${originalUrl}`, {
+        metadata: {
+          requestId,
+          method,
+          path: originalUrl,
+          ip,
+          userId
+        }
+      });
+    }
+  });
+  
+  // Добавляем requestId в заголовки ответа для отладки
+  if (process.env.NODE_ENV !== 'production') {
+    res.setHeader('X-Request-ID', requestId);
+  }
+  
+  // Добавляем метод для логирования в объект запроса
+  req.logger = {
+    info: (message, meta = {}) => {
+      logger.info(message, { 
+        metadata: { 
+          ...meta, 
+          requestId, 
+          userId 
+        } 
+      });
+    },
+    warn: (message, meta = {}) => {
+      logger.warn(message, { 
+        metadata: { 
+          ...meta, 
+          requestId, 
+          userId 
+        } 
+      });
+    },
+    error: (message, meta = {}) => {
+      logger.error(message, { 
+        metadata: { 
+          ...meta, 
+          requestId, 
+          userId 
+        } 
+      });
+    },
+    debug: (message, meta = {}) => {
+      logger.debug(message, { 
+        metadata: { 
+          ...meta, 
+          requestId, 
+          userId 
+        } 
+      });
+    }
+  };
+  
+  // Продолжаем выполнение цепочки middleware
+  next();
+};
+
+/**
+ * Middleware для логирования только в режиме разработки
+ * Использует console.log вместо winston для более читаемого вывода
+ * 
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {Function} next - Express next middleware function
+ */
+const devRequestLogger = (req, res, next) => {
+  const startTime = Date.now();
+  const { method, originalUrl, ip } = req;
+  
+  console.log(`\x1b[36m[${new Date().toISOString()}]\x1b[0m \x1b[33m${method}\x1b[0m ${originalUrl} - IP: ${ip}`);
+  
+  // Добавляем обработчик события 'finish' для логирования ответа
+  res.on('finish', () => {
+    const duration = Date.now() - startTime;
+    const statusCode = res.statusCode;
+    let statusColor = '\x1b[32m'; // Зеленый для успешных запросов
+    
+    if (statusCode >= 500) {
+      statusColor = '\x1b[31m'; // Красный для серверных ошибок
+    } else if (statusCode >= 400) {
+      statusColor = '\x1b[33m'; // Желтый для клиентских ошибок
+    }
+    
+    console.log(
+      `\x1b[36m[${new Date().toISOString()}]\x1b[0m \x1b[33m${method}\x1b[0m ${originalUrl} - ${statusColor}${statusCode}\x1b[0m - \x1b[35m${duration}ms\x1b[0m`
+    );
+  });
+  
+  next();
+};
+
+/**
+ * Выбор логгера в зависимости от окружения
+ */
+module.exports = process.env.NODE_ENV === 'development' ? devRequestLogger : requestLogger;

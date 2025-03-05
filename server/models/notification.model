@@ -1,0 +1,293 @@
+const mongoose = require('mongoose');
+const config = require('../config/config');
+
+/**
+ * Notification Schema
+ * Defines the structure for notification documents in the database
+ * Used for system notifications, alerts, and user-to-user messages
+ */
+const notificationSchema = new mongoose.Schema({
+  title: {
+    type: String,
+    required: [true, 'Notification title is required'],
+    trim: true,
+    maxlength: [100, 'Title cannot exceed 100 characters']
+  },
+  message: {
+    type: String,
+    required: [true, 'Notification message is required'],
+    trim: true,
+    maxlength: [500, 'Message cannot exceed 500 characters']
+  },
+  type: {
+    type: String,
+    enum: ['SYSTEM', 'INCIDENT', 'EQUIPMENT', 'USER', 'REPORT', 'ALERT'],
+    default: 'SYSTEM',
+    required: [true, 'Notification type is required']
+  },
+  priority: {
+    type: String,
+    enum: ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'],
+    default: 'MEDIUM'
+  },
+  status: {
+    type: String,
+    enum: ['UNREAD', 'READ', 'ARCHIVED'],
+    default: 'UNREAD'
+  },
+  recipient: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: [true, 'Notification recipient is required']
+  },
+  sender: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null
+  },
+  isSystemGenerated: {
+    type: Boolean,
+    default: true
+  },
+  relatedEntity: {
+    entityType: {
+      type: String,
+      enum: ['INCIDENT', 'EQUIPMENT', 'USER', 'REPORT', null],
+      default: null
+    },
+    entityId: {
+      type: mongoose.Schema.Types.ObjectId,
+      refPath: 'relatedEntity.entityType',
+      default: null
+    }
+  },
+  link: {
+    type: String,
+    default: null
+  },
+  expiresAt: {
+    type: Date,
+    default: function() {
+      // Default expiration is 30 days from creation
+      const now = new Date();
+      return new Date(now.setDate(now.getDate() + 30));
+    }
+  },
+  readAt: {
+    type: Date,
+    default: null
+  },
+  deliveryStatus: {
+    type: String,
+    enum: ['PENDING', 'DELIVERED', 'FAILED'],
+    default: 'PENDING'
+  },
+  deliveryMethod: {
+    type: String,
+    enum: ['IN_APP', 'EMAIL', 'SMS', 'PUSH'],
+    default: 'IN_APP'
+  },
+  metadata: {
+    type: mongoose.Schema.Types.Mixed,
+    default: {}
+  },
+  actions: [{
+    label: {
+      type: String,
+      required: true
+    },
+    url: {
+      type: String,
+      required: true
+    },
+    method: {
+      type: String,
+      enum: ['GET', 'POST', 'PUT', 'DELETE'],
+      default: 'GET'
+    },
+    data: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null
+    }
+  }]
+}, {
+  timestamps: true,
+  toJSON: { virtuals: true },
+  toObject: { virtuals: true }
+});
+
+/**
+ * Indexes for optimizing queries
+ */
+notificationSchema.index({ recipient: 1, status: 1 });
+notificationSchema.index({ recipient: 1, createdAt: -1 });
+notificationSchema.index({ 'relatedEntity.entityType': 1, 'relatedEntity.entityId': 1 });
+notificationSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 }); // TTL index for automatic deletion
+
+/**
+ * Virtual for checking if notification is expired
+ */
+notificationSchema.virtual('isExpired').get(function() {
+  return this.expiresAt && this.expiresAt < new Date();
+});
+
+/**
+ * Virtual for checking if notification is read
+ */
+notificationSchema.virtual('isRead').get(function() {
+  return this.status === 'READ';
+});
+
+/**
+ * Virtual for time elapsed since notification was created
+ */
+notificationSchema.virtual('timeElapsed').get(function() {
+  const now = new Date();
+  const created = this.createdAt;
+  const diffMs = now - created;
+  
+  // Convert to appropriate time unit
+  const diffSec = Math.floor(diffMs / 1000);
+  if (diffSec < 60) return `${diffSec} seconds ago`;
+  
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin} minutes ago`;
+  
+  const diffHour = Math.floor(diffMin / 60);
+  if (diffHour < 24) return `${diffHour} hours ago`;
+  
+  const diffDay = Math.floor(diffHour / 24);
+  if (diffDay < 30) return `${diffDay} days ago`;
+  
+  const diffMonth = Math.floor(diffDay / 30);
+  return `${diffMonth} months ago`;
+});
+
+/**
+ * Pre-save middleware to update readAt when status changes to READ
+ */
+notificationSchema.pre('save', function(next) {
+  if (this.isModified('status') && this.status === 'READ' && !this.readAt) {
+    this.readAt = new Date();
+  }
+  next();
+});
+
+/**
+ * Static method to create a system notification
+ */
+notificationSchema.statics.createSystemNotification = async function(options) {
+  const { 
+    recipient, 
+    title, 
+    message, 
+    type = 'SYSTEM', 
+    priority = 'MEDIUM',
+    link = null,
+    relatedEntity = null,
+    metadata = {},
+    actions = []
+  } = options;
+
+  const notification = await this.create({
+    title,
+    message,
+    type,
+    priority,
+    recipient,
+    link,
+    relatedEntity,
+    isSystemGenerated: true,
+    metadata,
+    actions,
+    deliveryStatus: 'DELIVERED'
+  });
+
+  return notification;
+};
+
+/**
+ * Static method to mark all notifications as read for a user
+ */
+notificationSchema.statics.markAllAsRead = async function(userId) {
+  const result = await this.updateMany(
+    { recipient: userId, status: 'UNREAD' },
+    { 
+      status: 'READ',
+      readAt: new Date()
+    }
+  );
+  
+  return result.modifiedCount;
+};
+
+/**
+ * Static method to get unread count for a user
+ */
+notificationSchema.statics.getUnreadCount = async function(userId) {
+  return await this.countDocuments({ recipient: userId, status: 'UNREAD' });
+};
+
+/**
+ * Static method to get recent notifications for a user
+ */
+notificationSchema.statics.getRecentNotifications = async function(userId, limit = 10) {
+  return await this.find({ recipient: userId })
+    .sort({ createdAt: -1 })
+    .limit(limit)
+    .populate('sender', 'firstName lastName avatar')
+    .exec();
+};
+
+/**
+ * Static method to archive old notifications
+ */
+notificationSchema.statics.archiveOldNotifications = async function(olderThan = 90) {
+  const cutoffDate = new Date();
+  cutoffDate.setDate(cutoffDate.getDate() - olderThan);
+  
+  const result = await this.updateMany(
+    { 
+      createdAt: { $lt: cutoffDate },
+      status: { $ne: 'ARCHIVED' }
+    },
+    { status: 'ARCHIVED' }
+  );
+  
+  return result.modifiedCount;
+};
+
+/**
+ * Method to mark notification as read
+ */
+notificationSchema.methods.markAsRead = async function() {
+  if (this.status !== 'READ') {
+    this.status = 'READ';
+    this.readAt = new Date();
+    await this.save();
+    return true;
+  }
+  return false;
+};
+
+/**
+ * Method to archive notification
+ */
+notificationSchema.methods.archive = async function() {
+  this.status = 'ARCHIVED';
+  await this.save();
+  return true;
+};
+
+/**
+ * Method to add action to notification
+ */
+notificationSchema.methods.addAction = async function(action) {
+  this.actions.push(action);
+  await this.save();
+  return this;
+};
+
+const NotificationModel = mongoose.model('Notification', notificationSchema);
+
+module.exports = NotificationModel;

@@ -1,0 +1,387 @@
+const nodemailer = require('nodemailer');
+const config = require('../config/config');
+const fs = require('fs');
+const path = require('path');
+const handlebars = require('handlebars');
+const logger = require('../config/winston');
+
+/**
+ * Сервис для отправки электронных писем
+ * Обеспечивает функциональность отправки уведомлений, сообщений о сбросе пароля
+ * и других системных сообщений пользователям
+ */
+class EmailService {
+  constructor() {
+    this.transporter = null;
+    this.templateCache = new Map();
+    this.initialize();
+  }
+
+  /**
+   * Инициализирует транспортер для отправки писем
+   */
+  initialize() {
+    try {
+      this.transporter = nodemailer.createTransport({
+        host: config.email.host,
+        port: config.email.port,
+        secure: config.email.secure,
+        auth: {
+          user: config.email.user,
+          pass: config.email.password,
+        },
+        tls: {
+          rejectUnauthorized: config.email.rejectUnauthorized || false
+        }
+      });
+
+      // Проверяем соединение с почтовым сервером
+      this.transporter.verify((error) => {
+        if (error) {
+          logger.error('Email service connection error:', error);
+        } else {
+          logger.info('Email service ready to send messages');
+        }
+      });
+    } catch (error) {
+      logger.error('Failed to initialize email service:', error);
+    }
+  }
+
+  /**
+   * Загружает шаблон письма из файла
+   * @param {string} templateName - Имя шаблона (без расширения)
+   * @returns {Function} Скомпилированный шаблон Handlebars
+   */
+  async loadTemplate(templateName) {
+    try {
+      // Проверяем, есть ли шаблон в кэше
+      if (this.templateCache.has(templateName)) {
+        return this.templateCache.get(templateName);
+      }
+
+      // Путь к шаблону
+      const templatePath = path.join(__dirname, '../templates/emails', `${templateName}.html`);
+      
+      // Читаем файл шаблона
+      const templateSource = await fs.promises.readFile(templatePath, 'utf-8');
+      
+      // Компилируем шаблон
+      const template = handlebars.compile(templateSource);
+      
+      // Сохраняем в кэш
+      this.templateCache.set(templateName, template);
+      
+      return template;
+    } catch (error) {
+      logger.error(`Failed to load email template "${templateName}":`, error);
+      throw new Error(`Failed to load email template: ${error.message}`);
+    }
+  }
+
+  /**
+   * Отправляет электронное письмо
+   * @param {Object} options - Параметры письма
+   * @param {string} options.to - Email получателя
+   * @param {string} options.subject - Тема письма
+   * @param {string} options.text - Текстовое содержимое (опционально)
+   * @param {string} options.html - HTML содержимое (опционально)
+   * @param {Array} options.attachments - Вложения (опционально)
+   * @returns {Promise<Object>} Результат отправки
+   */
+  async sendEmail({ to, subject, text, html, attachments = [] }) {
+    try {
+      if (!this.transporter) {
+        this.initialize();
+      }
+
+      const mailOptions = {
+        from: `"${config.email.senderName}" <${config.email.user}>`,
+        to,
+        subject,
+        attachments
+      };
+
+      if (text) mailOptions.text = text;
+      if (html) mailOptions.html = html;
+
+      const info = await this.transporter.sendMail(mailOptions);
+      
+      logger.info(`Email sent to ${to}. MessageId: ${info.messageId}`);
+      return info;
+    } catch (error) {
+      logger.error('Failed to send email:', error);
+      throw new Error(`Failed to send email: ${error.message}`);
+    }
+  }
+
+  /**
+   * Отправляет письмо с использованием шаблона
+   * @param {Object} options - Параметры письма
+   * @param {string} options.to - Email получателя
+   * @param {string} options.subject - Тема письма
+   * @param {string} options.templateName - Имя шаблона
+   * @param {Object} options.context - Данные для шаблона
+   * @param {Array} options.attachments - Вложения (опционально)
+   * @returns {Promise<Object>} Результат отправки
+   */
+  async sendTemplateEmail({ to, subject, templateName, context, attachments = [] }) {
+    try {
+      // Загружаем шаблон
+      const template = await this.loadTemplate(templateName);
+      
+      // Применяем данные к шаблону
+      const html = template(context);
+      
+      // Отправляем письмо
+      return await this.sendEmail({
+        to,
+        subject,
+        html,
+        attachments
+      });
+    } catch (error) {
+      logger.error(`Failed to send template email "${templateName}":`, error);
+      throw new Error(`Failed to send template email: ${error.message}`);
+    }
+  }
+
+  /**
+   * Отправляет письмо для сброса пароля
+   * @param {Object} options - Параметры письма
+   * @param {string} options.to - Email получателя
+   * @param {string} options.username - Имя пользователя
+   * @param {string} options.resetToken - Токен для сброса пароля
+   * @param {string} options.resetUrl - URL для сброса пароля
+   * @returns {Promise<Object>} Результат отправки
+   */
+  async sendPasswordResetEmail({ to, username, resetToken, resetUrl }) {
+    try {
+      const context = {
+        username,
+        resetToken,
+        resetUrl: resetUrl || `${config.clientUrl}/reset-password?token=${resetToken}`,
+        expiresIn: '1 hour',
+        year: new Date().getFullYear(),
+        companyName: config.appName || 'IT Service Desk'
+      };
+      
+      return await this.sendTemplateEmail({
+        to,
+        subject: 'Сброс пароля',
+        templateName: 'password-reset',
+        context
+      });
+    } catch (error) {
+      logger.error('Failed to send password reset email:', error);
+      throw new Error(`Failed to send password reset email: ${error.message}`);
+    }
+  }
+
+  /**
+   * Отправляет уведомление о новом инциденте
+   * @param {Object} options - Параметры уведомления
+   * @param {string} options.to - Email получателя
+   * @param {string} options.username - Имя пользователя
+   * @param {Object} options.incident - Данные инцидента
+   * @returns {Promise<Object>} Результат отправки
+   */
+  async sendIncidentNotification({ to, username, incident }) {
+    try {
+      const context = {
+        username,
+        incidentId: incident._id,
+        incidentTitle: incident.title,
+        incidentDescription: incident.description,
+        incidentPriority: incident.priority,
+        incidentStatus: incident.status,
+        incidentUrl: `${config.clientUrl}/incidents/${incident._id}`,
+        year: new Date().getFullYear(),
+        companyName: config.appName || 'IT Service Desk'
+      };
+      
+      return await this.sendTemplateEmail({
+        to,
+        subject: `Новый инцидент: ${incident.title}`,
+        templateName: 'incident-notification',
+        context
+      });
+    } catch (error) {
+      logger.error('Failed to send incident notification:', error);
+      throw new Error(`Failed to send incident notification: ${error.message}`);
+    }
+  }
+
+  /**
+   * Отправляет уведомление об изменении статуса инцидента
+   * @param {Object} options - Параметры уведомления
+   * @param {string} options.to - Email получателя
+   * @param {string} options.username - Имя пользователя
+   * @param {Object} options.incident - Данные инцидента
+   * @param {string} options.previousStatus - Предыдущий статус
+   * @returns {Promise<Object>} Результат отправки
+   */
+  async sendIncidentStatusUpdateNotification({ to, username, incident, previousStatus }) {
+    try {
+      const context = {
+        username,
+        incidentId: incident._id,
+        incidentTitle: incident.title,
+        previousStatus,
+        currentStatus: incident.status,
+        incidentUrl: `${config.clientUrl}/incidents/${incident._id}`,
+        year: new Date().getFullYear(),
+        companyName: config.appName || 'IT Service Desk'
+      };
+      
+      return await this.sendTemplateEmail({
+        to,
+        subject: `Обновление статуса инцидента: ${incident.title}`,
+        templateName: 'incident-status-update',
+        context
+      });
+    } catch (error) {
+      logger.error('Failed to send incident status update notification:', error);
+      throw new Error(`Failed to send incident status update notification: ${error.message}`);
+    }
+  }
+
+  /**
+   * Отправляет уведомление о назначении инцидента
+   * @param {Object} options - Параметры уведомления
+   * @param {string} options.to - Email получателя
+   * @param {string} options.username - Имя пользователя
+   * @param {Object} options.incident - Данные инцидента
+   * @param {Object} options.assignedBy - Пользователь, назначивший инцидент
+   * @returns {Promise<Object>} Результат отправки
+   */
+  async sendIncidentAssignmentNotification({ to, username, incident, assignedBy }) {
+    try {
+      const context = {
+        username,
+        incidentId: incident._id,
+        incidentTitle: incident.title,
+        incidentPriority: incident.priority,
+        assignedBy: assignedBy.fullName || assignedBy.username,
+        incidentUrl: `${config.clientUrl}/incidents/${incident._id}`,
+        year: new Date().getFullYear(),
+        companyName: config.appName || 'IT Service Desk'
+      };
+      
+      return await this.sendTemplateEmail({
+        to,
+        subject: `Вам назначен инцидент: ${incident.title}`,
+        templateName: 'incident-assignment',
+        context
+      });
+    } catch (error) {
+      logger.error('Failed to send incident assignment notification:', error);
+      throw new Error(`Failed to send incident assignment notification: ${error.message}`);
+    }
+  }
+
+  /**
+   * Отправляет отчет в виде вложения
+   * @param {Object} options - Параметры отчета
+   * @param {string} options.to - Email получателя
+   * @param {string} options.username - Имя пользователя
+   * @param {string} options.reportName - Название отчета
+   * @param {string} options.reportType - Тип отчета (PDF, Excel и т.д.)
+   * @param {Buffer} options.reportData - Данные отчета
+   * @param {string} options.filename - Имя файла отчета
+   * @returns {Promise<Object>} Результат отправки
+   */
+  async sendReportEmail({ to, username, reportName, reportType, reportData, filename }) {
+    try {
+      const context = {
+        username,
+        reportName,
+        reportType,
+        year: new Date().getFullYear(),
+        companyName: config.appName || 'IT Service Desk'
+      };
+      
+      const attachments = [{
+        filename: filename || `${reportName}.${reportType.toLowerCase()}`,
+        content: reportData
+      }];
+      
+      return await this.sendTemplateEmail({
+        to,
+        subject: `Отчет: ${reportName}`,
+        templateName: 'report-email',
+        context,
+        attachments
+      });
+    } catch (error) {
+      logger.error('Failed to send report email:', error);
+      throw new Error(`Failed to send report email: ${error.message}`);
+    }
+  }
+
+  /**
+   * Отправляет уведомление о добавлении нового оборудования
+   * @param {Object} options - Параметры уведомления
+   * @param {string} options.to - Email получателя
+   * @param {string} options.username - Имя пользователя
+   * @param {Object} options.equipment - Данные оборудования
+   * @returns {Promise<Object>} Результат отправки
+   */
+  async sendNewEquipmentNotification({ to, username, equipment }) {
+    try {
+      const context = {
+        username,
+        equipmentId: equipment._id,
+        equipmentName: equipment.name,
+        equipmentType: equipment.type,
+        equipmentSerialNumber: equipment.serialNumber,
+        equipmentStatus: equipment.status,
+        equipmentUrl: `${config.clientUrl}/equipment/${equipment._id}`,
+        year: new Date().getFullYear(),
+        companyName: config.appName || 'IT Service Desk'
+      };
+      
+      return await this.sendTemplateEmail({
+        to,
+        subject: `Новое оборудование: ${equipment.name}`,
+        templateName: 'new-equipment',
+        context
+      });
+    } catch (error) {
+      logger.error('Failed to send new equipment notification:', error);
+      throw new Error(`Failed to send new equipment notification: ${error.message}`);
+    }
+  }
+
+  /**
+   * Отправляет уведомление о регистрации нового пользователя
+   * @param {Object} options - Параметры уведомления
+   * @param {string} options.to - Email получателя
+   * @param {string} options.username - Имя пользователя
+   * @param {string} options.role - Роль пользователя
+   * @returns {Promise<Object>} Результат отправки
+   */
+  async sendWelcomeEmail({ to, username, role }) {
+    try {
+      const context = {
+        username,
+        role,
+        loginUrl: `${config.clientUrl}/login`,
+        year: new Date().getFullYear(),
+        companyName: config.appName || 'IT Service Desk'
+      };
+      
+      return await this.sendTemplateEmail({
+        to,
+        subject: 'Добро пожаловать в IT Service Desk',
+        templateName: 'welcome-email',
+        context
+      });
+    } catch (error) {
+      logger.error('Failed to send welcome email:', error);
+      throw new Error(`Failed to send welcome email: ${error.message}`);
+    }
+  }
+}
+
+module.exports = new EmailService();

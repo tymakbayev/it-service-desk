@@ -1,0 +1,349 @@
+const socketIO = require('socket.io');
+const jwt = require('jsonwebtoken');
+const config = require('../config/config');
+const User = require('../models/user.model');
+const logger = require('../config/winston');
+const Notification = require('../models/notification.model');
+
+/**
+ * WebSocketService - сервис для управления WebSocket соединениями
+ * Обеспечивает двустороннюю связь между клиентами и сервером в реальном времени
+ * Используется для отправки уведомлений, обновлений статусов инцидентов и оборудования
+ */
+class WebSocketService {
+  constructor() {
+    this.io = null;
+    this.connectedUsers = new Map(); // Map of userId -> socketId
+    this.userRoles = new Map(); // Map of userId -> role
+    this.activeConnections = 0;
+  }
+
+  /**
+   * Инициализация WebSocket сервера
+   * @param {Object} server - HTTP сервер Express
+   */
+  initialize(server) {
+    this.io = socketIO(server, {
+      cors: {
+        origin: config.corsOrigin || '*',
+        methods: ['GET', 'POST'],
+        credentials: true
+      }
+    });
+
+    // Middleware для аутентификации пользователей через JWT
+    this.io.use(async (socket, next) => {
+      try {
+        const token = socket.handshake.auth.token || socket.handshake.query.token;
+        
+        if (!token) {
+          return next(new Error('Authentication error: Token not provided'));
+        }
+        
+        // Проверка JWT токена
+        const decoded = jwt.verify(token, config.jwtSecret);
+        
+        // Получение пользователя из базы данных для проверки существования и получения роли
+        const user = await User.findById(decoded.id).select('role name email');
+        
+        if (!user) {
+          logger.warn(`WebSocket authentication failed: User not found (ID: ${decoded.id})`);
+          return next(new Error('Authentication error: User not found'));
+        }
+        
+        // Прикрепление данных пользователя к сокету
+        socket.userId = decoded.id;
+        socket.userRole = user.role;
+        socket.userName = user.name;
+        socket.userEmail = user.email;
+        
+        logger.debug(`WebSocket authentication successful for user ${user.name} (${user._id})`);
+        next();
+      } catch (error) {
+        logger.error('WebSocket authentication error:', error);
+        next(new Error('Authentication error: ' + error.message));
+      }
+    });
+
+    // Обработка подключения клиента
+    this.io.on('connection', (socket) => {
+      this.activeConnections++;
+      logger.info(`User connected: ${socket.userId} (${socket.userRole}) - Active connections: ${this.activeConnections}`);
+      
+      // Сохранение информации о подключенном пользователе
+      this.connectedUsers.set(socket.userId, socket.id);
+      this.userRoles.set(socket.userId, socket.userRole);
+      
+      // Подключение к комнате на основе роли пользователя
+      socket.join(`role:${socket.userRole}`);
+      
+      // Отправка списка непрочитанных уведомлений при подключении
+      this.sendUnreadNotifications(socket.userId);
+      
+      // Обработка отключения клиента
+      socket.on('disconnect', () => {
+        this.activeConnections--;
+        logger.info(`User disconnected: ${socket.userId} - Active connections: ${this.activeConnections}`);
+        this.connectedUsers.delete(socket.userId);
+        this.userRoles.delete(socket.userId);
+      });
+      
+      // Обработка подписки на обновления конкретного инцидента
+      socket.on('subscribe:incident', (incidentId) => {
+        socket.join(`incident:${incidentId}`);
+        logger.debug(`User ${socket.userId} subscribed to incident ${incidentId}`);
+      });
+      
+      // Обработка отписки от обновлений конкретного инцидента
+      socket.on('unsubscribe:incident', (incidentId) => {
+        socket.leave(`incident:${incidentId}`);
+        logger.debug(`User ${socket.userId} unsubscribed from incident ${incidentId}`);
+      });
+
+      // Обработка подписки на обновления конкретного оборудования
+      socket.on('subscribe:equipment', (equipmentId) => {
+        socket.join(`equipment:${equipmentId}`);
+        logger.debug(`User ${socket.userId} subscribed to equipment ${equipmentId}`);
+      });
+      
+      // Обработка отписки от обновлений конкретного оборудования
+      socket.on('unsubscribe:equipment', (equipmentId) => {
+        socket.leave(`equipment:${equipmentId}`);
+        logger.debug(`User ${socket.userId} unsubscribed from equipment ${equipmentId}`);
+      });
+
+      // Обработка прочтения уведомления
+      socket.on('notification:read', async (notificationId) => {
+        try {
+          await Notification.findByIdAndUpdate(notificationId, { read: true });
+          logger.debug(`Notification ${notificationId} marked as read by user ${socket.userId}`);
+        } catch (error) {
+          logger.error(`Error marking notification as read: ${error.message}`);
+        }
+      });
+
+      // Обработка прочтения всех уведомлений пользователя
+      socket.on('notification:readAll', async () => {
+        try {
+          await Notification.updateMany(
+            { recipient: socket.userId, read: false },
+            { read: true }
+          );
+          logger.debug(`All notifications marked as read for user ${socket.userId}`);
+        } catch (error) {
+          logger.error(`Error marking all notifications as read: ${error.message}`);
+        }
+      });
+    });
+
+    logger.info('WebSocket server initialized successfully');
+  }
+
+  /**
+   * Отправка непрочитанных уведомлений пользователю при подключении
+   * @param {string} userId - ID пользователя
+   */
+  async sendUnreadNotifications(userId) {
+    try {
+      const unreadNotifications = await Notification.find({ 
+        recipient: userId, 
+        read: false 
+      })
+      .sort({ createdAt: -1 })
+      .limit(20);
+      
+      if (unreadNotifications.length > 0) {
+        const socketId = this.connectedUsers.get(userId);
+        if (socketId) {
+          this.io.to(socketId).emit('notifications:unread', unreadNotifications);
+          logger.debug(`Sent ${unreadNotifications.length} unread notifications to user ${userId}`);
+        }
+      }
+    } catch (error) {
+      logger.error(`Error sending unread notifications: ${error.message}`);
+    }
+  }
+
+  /**
+   * Отправка сообщения конкретному пользователю
+   * @param {string} userId - ID пользователя
+   * @param {string} event - Название события
+   * @param {Object} data - Данные для отправки
+   * @returns {boolean} - Успешность отправки
+   */
+  sendToUser(userId, event, data) {
+    try {
+      const socketId = this.connectedUsers.get(userId);
+      
+      if (socketId) {
+        this.io.to(socketId).emit(event, {
+          ...data,
+          timestamp: new Date()
+        });
+        logger.debug(`Event '${event}' sent to user ${userId}`);
+        return true;
+      }
+      
+      logger.debug(`User ${userId} not connected, couldn't send event '${event}'`);
+      return false; // Пользователь не подключен
+    } catch (error) {
+      logger.error(`Error sending to user: ${error.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Отправка уведомления конкретному пользователю
+   * @param {string} userId - ID пользователя
+   * @param {Object} notification - Объект уведомления
+   * @returns {boolean} - Успешность отправки
+   */
+  broadcastToUser(userId, notification) {
+    return this.sendToUser(userId, 'notification', notification);
+  }
+
+  /**
+   * Отправка сообщения пользователям с определенной ролью
+   * @param {string|string[]} roles - Роль или массив ролей
+   * @param {string} event - Название события
+   * @param {Object} data - Данные для отправки
+   * @returns {boolean} - Успешность отправки
+   */
+  sendToRole(roles, event, data) {
+    try {
+      const roleArray = Array.isArray(roles) ? roles : [roles];
+      
+      roleArray.forEach(role => {
+        this.io.to(`role:${role}`).emit(event, {
+          ...data,
+          timestamp: new Date()
+        });
+        logger.debug(`Event '${event}' sent to role ${role}`);
+      });
+      
+      return true;
+    } catch (error) {
+      logger.error(`Error sending to role: ${error.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Отправка уведомления пользователям с определенной ролью
+   * @param {string|string[]} roles - Роль или массив ролей
+   * @param {Object} notification - Объект уведомления
+   * @returns {boolean} - Успешность отправки
+   */
+  broadcastToRole(roles, notification) {
+    return this.sendToRole(roles, 'notification', notification);
+  }
+
+  /**
+   * Отправка сообщения всем подключенным пользователям
+   * @param {string} event - Название события
+   * @param {Object} data - Данные для отправки
+   * @returns {boolean} - Успешность отправки
+   */
+  broadcastToAll(event, data) {
+    try {
+      this.io.emit(event, {
+        ...data,
+        timestamp: new Date()
+      });
+      logger.debug(`Event '${event}' broadcast to all connected users`);
+      return true;
+    } catch (error) {
+      logger.error(`Error broadcasting to all: ${error.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Отправка обновления статуса инцидента всем подписчикам
+   * @param {string} incidentId - ID инцидента
+   * @param {Object} incidentData - Данные инцидента
+   * @returns {boolean} - Успешность отправки
+   */
+  updateIncident(incidentId, incidentData) {
+    try {
+      this.io.to(`incident:${incidentId}`).emit('incident:update', {
+        ...incidentData,
+        timestamp: new Date()
+      });
+      logger.debug(`Incident update sent for incident ${incidentId}`);
+      return true;
+    } catch (error) {
+      logger.error(`Error sending incident update: ${error.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Отправка обновления статуса оборудования всем подписчикам
+   * @param {string} equipmentId - ID оборудования
+   * @param {Object} equipmentData - Данные оборудования
+   * @returns {boolean} - Успешность отправки
+   */
+  updateEquipment(equipmentId, equipmentData) {
+    try {
+      this.io.to(`equipment:${equipmentId}`).emit('equipment:update', {
+        ...equipmentData,
+        timestamp: new Date()
+      });
+      logger.debug(`Equipment update sent for equipment ${equipmentId}`);
+      return true;
+    } catch (error) {
+      logger.error(`Error sending equipment update: ${error.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Отправка обновления данных дашборда всем пользователям с определенной ролью
+   * @param {string|string[]} roles - Роль или массив ролей
+   * @param {Object} dashboardData - Данные дашборда
+   * @returns {boolean} - Успешность отправки
+   */
+  updateDashboard(roles, dashboardData) {
+    return this.sendToRole(roles, 'dashboard:update', dashboardData);
+  }
+
+  /**
+   * Проверка, подключен ли пользователь
+   * @param {string} userId - ID пользователя
+   * @returns {boolean} - Статус подключения
+   */
+  isUserConnected(userId) {
+    return this.connectedUsers.has(userId);
+  }
+
+  /**
+   * Получение количества активных подключений
+   * @returns {number} - Количество активных подключений
+   */
+  getActiveConnectionsCount() {
+    return this.activeConnections;
+  }
+
+  /**
+   * Получение списка подключенных пользователей
+   * @returns {Array} - Массив ID подключенных пользователей
+   */
+  getConnectedUsers() {
+    return Array.from(this.connectedUsers.keys());
+  }
+
+  /**
+   * Получение списка подключенных пользователей с определенной ролью
+   * @param {string} role - Роль пользователей
+   * @returns {Array} - Массив ID подключенных пользователей с указанной ролью
+   */
+  getConnectedUsersByRole(role) {
+    return Array.from(this.userRoles.entries())
+      .filter(([_, userRole]) => userRole === role)
+      .map(([userId]) => userId);
+  }
+}
+
+// Экспорт синглтона сервиса
+module.exports = new WebSocketService();

@@ -1,0 +1,1711 @@
+const IncidentModel = require('../models/incident.model');
+const EquipmentModel = require('../models/equipment.model');
+const UserModel = require('../models/user.model');
+const ReportModel = require('../models/report.model');
+const fs = require('fs');
+const path = require('path');
+const PDFDocument = require('pdfkit');
+const xlsx = require('xlsx');
+const { format } = require('date-fns');
+const mongoose = require('mongoose');
+const config = require('../config/config');
+const logger = require('../config/winston');
+
+/**
+ * Controller for handling report generation and management
+ */
+class ReportController {
+  /**
+   * Generate a report based on type and format
+   * @param {Object} req - Express request object
+   * @param {Object} req.body - Request body containing report options
+   * @param {String} req.body.type - Type of report (incidents, equipment, users, performance)
+   * @param {String} req.body.format - Format of report (pdf, excel, csv)
+   * @param {String} req.body.title - Title of the report
+   * @param {Object} req.body.filters - Filters to apply to the report
+   * @param {Boolean} req.body.includeCharts - Whether to include charts in the report
+   * @param {String} req.body.groupBy - Field to group results by
+   * @param {Object} res - Express response object
+   * @returns {Object} Report URL and options
+   */
+  async generateReport(req, res) {
+    try {
+      const { type, format, title, filters, includeCharts, groupBy } = req.body;
+      const userId = req.user.id;
+
+      // Validate report type
+      if (!['incidents', 'equipment', 'users', 'performance'].includes(type)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid report type'
+        });
+      }
+
+      // Validate report format
+      if (!['pdf', 'excel', 'csv'].includes(format)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid report format'
+        });
+      }
+
+      let reportData;
+      // Fetch data based on report type
+      switch (type) {
+        case 'incidents':
+          reportData = await this.getIncidentReportData(filters, groupBy);
+          break;
+        case 'equipment':
+          reportData = await this.getEquipmentReportData(filters, groupBy);
+          break;
+        case 'users':
+          reportData = await this.getUserReportData(filters, groupBy);
+          break;
+        case 'performance':
+          reportData = await this.getPerformanceReportData(filters);
+          break;
+        default:
+          return res.status(400).json({
+            success: false,
+            message: 'Invalid report type'
+          });
+      }
+
+      // Generate report file
+      let reportUrl;
+      switch (format) {
+        case 'pdf':
+          reportUrl = await this.generatePDFReport(reportData, title, type, includeCharts);
+          break;
+        case 'excel':
+          reportUrl = await this.generateExcelReport(reportData, title, type);
+          break;
+        case 'csv':
+          reportUrl = await this.generateCSVReport(reportData, title, type);
+          break;
+        default:
+          return res.status(400).json({
+            success: false,
+            message: 'Invalid report format'
+          });
+      }
+
+      // Save report metadata to database
+      const report = new ReportModel({
+        title,
+        type,
+        format,
+        filters,
+        generatedBy: userId,
+        fileUrl: reportUrl,
+        generatedAt: new Date()
+      });
+
+      await report.save();
+
+      return res.status(200).json({
+        success: true,
+        reportUrl: `${config.apiUrl}${reportUrl}`,
+        reportOptions: {
+          type,
+          format,
+          title,
+          filters,
+          includeCharts,
+          groupBy
+        }
+      });
+    } catch (error) {
+      logger.error('Error generating report:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to generate report',
+        error: error.message
+      });
+    }
+  }
+
+  /**
+   * Get all reports for the current user
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   * @returns {Object} List of reports
+   */
+  async getReports(req, res) {
+    try {
+      const userId = req.user.id;
+      const page = parseInt(req.query.page) || 1;
+      const limit = parseInt(req.query.limit) || 10;
+      const skip = (page - 1) * limit;
+
+      const reports = await ReportModel.find({ generatedBy: userId })
+        .sort({ generatedAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate('generatedBy', 'name email');
+
+      const total = await ReportModel.countDocuments({ generatedBy: userId });
+
+      return res.status(200).json({
+        success: true,
+        data: reports,
+        pagination: {
+          total,
+          page,
+          limit,
+          pages: Math.ceil(total / limit)
+        }
+      });
+    } catch (error) {
+      logger.error('Error fetching reports:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to fetch reports',
+        error: error.message
+      });
+    }
+  }
+
+  /**
+   * Get a specific report by ID
+   * @param {Object} req - Express request object
+   * @param {String} req.params.id - Report ID
+   * @param {Object} res - Express response object
+   * @returns {Object} Report details
+   */
+  async getReportById(req, res) {
+    try {
+      const reportId = req.params.id;
+      const userId = req.user.id;
+
+      const report = await ReportModel.findById(reportId)
+        .populate('generatedBy', 'name email');
+
+      if (!report) {
+        return res.status(404).json({
+          success: false,
+          message: 'Report not found'
+        });
+      }
+
+      // Check if the user has permission to view this report
+      if (report.generatedBy._id.toString() !== userId && req.user.role !== 'admin') {
+        return res.status(403).json({
+          success: false,
+          message: 'You do not have permission to view this report'
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        data: report
+      });
+    } catch (error) {
+      logger.error('Error fetching report:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to fetch report',
+        error: error.message
+      });
+    }
+  }
+
+  /**
+   * Delete a report by ID
+   * @param {Object} req - Express request object
+   * @param {String} req.params.id - Report ID
+   * @param {Object} res - Express response object
+   * @returns {Object} Success message
+   */
+  async deleteReport(req, res) {
+    try {
+      const reportId = req.params.id;
+      const userId = req.user.id;
+
+      const report = await ReportModel.findById(reportId);
+
+      if (!report) {
+        return res.status(404).json({
+          success: false,
+          message: 'Report not found'
+        });
+      }
+
+      // Check if the user has permission to delete this report
+      if (report.generatedBy.toString() !== userId && req.user.role !== 'admin') {
+        return res.status(403).json({
+          success: false,
+          message: 'You do not have permission to delete this report'
+        });
+      }
+
+      // Delete the file
+      if (report.fileUrl) {
+        const filePath = path.join(__dirname, '..', '..', report.fileUrl);
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+        }
+      }
+
+      await ReportModel.findByIdAndDelete(reportId);
+
+      return res.status(200).json({
+        success: true,
+        message: 'Report deleted successfully'
+      });
+    } catch (error) {
+      logger.error('Error deleting report:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to delete report',
+        error: error.message
+      });
+    }
+  }
+
+  /**
+   * Get incident report data based on filters
+   * @param {Object} filters - Filters to apply
+   * @param {String} groupBy - Field to group by
+   * @returns {Object} Report data
+   * @private
+   */
+  async getIncidentReportData(filters, groupBy) {
+    // Build filter object based on provided filters
+    const query = {};
+    
+    if (filters.startDate && filters.endDate) {
+      query.createdAt = {
+        $gte: new Date(filters.startDate),
+        $lte: new Date(filters.endDate)
+      };
+    }
+    
+    if (filters.status && filters.status.length > 0) {
+      query.status = { $in: filters.status };
+    }
+    
+    if (filters.priority && filters.priority.length > 0) {
+      query.priority = { $in: filters.priority };
+    }
+    
+    if (filters.assignedTo && filters.assignedTo.length > 0) {
+      query.assignedTo = { $in: filters.assignedTo.map(id => mongoose.Types.ObjectId(id)) };
+    }
+    
+    if (filters.department && filters.department.length > 0) {
+      // Join with user model to filter by department
+      const users = await UserModel.find({ department: { $in: filters.department } }).select('_id');
+      query.reportedBy = { $in: users.map(user => user._id) };
+    }
+    
+    // Fetch incidents based on filter
+    const incidents = await IncidentModel.find(query)
+      .populate('assignedTo', 'name email department')
+      .populate('reportedBy', 'name email department')
+      .populate('relatedEquipment', 'name type serialNumber status');
+    
+    // Calculate statistics
+    const statistics = {
+      total: incidents.length,
+      byStatus: {},
+      byPriority: {},
+      byAssignee: {},
+      averageResolutionTime: 0,
+      resolutionTimeByPriority: {}
+    };
+    
+    // Group data if requested
+    let groupedData = {};
+    if (groupBy) {
+      incidents.forEach(incident => {
+        let groupValue;
+        
+        switch (groupBy) {
+          case 'status':
+            groupValue = incident.status;
+            break;
+          case 'priority':
+            groupValue = incident.priority;
+            break;
+          case 'assignedTo':
+            groupValue = incident.assignedTo ? incident.assignedTo.name : 'Unassigned';
+            break;
+          case 'department':
+            groupValue = incident.reportedBy ? incident.reportedBy.department : 'Unknown';
+            break;
+          case 'month':
+            groupValue = format(new Date(incident.createdAt), 'MMM yyyy');
+            break;
+          case 'week':
+            groupValue = `Week ${format(new Date(incident.createdAt), 'w, yyyy')}`;
+            break;
+          default:
+            groupValue = 'All';
+        }
+        
+        if (!groupedData[groupValue]) {
+          groupedData[groupValue] = [];
+        }
+        
+        groupedData[groupValue].push(incident);
+      });
+    }
+    
+    // Calculate statistics
+    incidents.forEach(incident => {
+      // Count by status
+      if (!statistics.byStatus[incident.status]) {
+        statistics.byStatus[incident.status] = 0;
+      }
+      statistics.byStatus[incident.status]++;
+      
+      // Count by priority
+      if (!statistics.byPriority[incident.priority]) {
+        statistics.byPriority[incident.priority] = 0;
+      }
+      statistics.byPriority[incident.priority]++;
+      
+      // Count by assignee
+      const assigneeName = incident.assignedTo ? incident.assignedTo.name : 'Unassigned';
+      if (!statistics.byAssignee[assigneeName]) {
+        statistics.byAssignee[assigneeName] = 0;
+      }
+      statistics.byAssignee[assigneeName]++;
+      
+      // Calculate resolution time for resolved incidents
+      if (incident.status === 'resolved' && incident.resolvedAt) {
+        const resolutionTime = new Date(incident.resolvedAt) - new Date(incident.createdAt);
+        statistics.averageResolutionTime += resolutionTime;
+        
+        // Calculate resolution time by priority
+        if (!statistics.resolutionTimeByPriority[incident.priority]) {
+          statistics.resolutionTimeByPriority[incident.priority] = {
+            total: 0,
+            count: 0
+          };
+        }
+        
+        statistics.resolutionTimeByPriority[incident.priority].total += resolutionTime;
+        statistics.resolutionTimeByPriority[incident.priority].count++;
+      }
+    });
+    
+    // Calculate average resolution time in hours
+    if (incidents.filter(i => i.status === 'resolved').length > 0) {
+      statistics.averageResolutionTime = (statistics.averageResolutionTime / incidents.filter(i => i.status === 'resolved').length) / (1000 * 60 * 60);
+      
+      // Calculate average resolution time by priority
+      Object.keys(statistics.resolutionTimeByPriority).forEach(priority => {
+        const { total, count } = statistics.resolutionTimeByPriority[priority];
+        if (count > 0) {
+          statistics.resolutionTimeByPriority[priority] = (total / count) / (1000 * 60 * 60);
+        } else {
+          statistics.resolutionTimeByPriority[priority] = 0;
+        }
+      });
+    }
+    
+    return {
+      incidents,
+      statistics,
+      groupedData: Object.keys(groupedData).length > 0 ? groupedData : null
+    };
+  }
+
+  /**
+   * Get equipment report data based on filters
+   * @param {Object} filters - Filters to apply
+   * @param {String} groupBy - Field to group by
+   * @returns {Object} Report data
+   * @private
+   */
+  async getEquipmentReportData(filters, groupBy) {
+    // Build filter object based on provided filters
+    const query = {};
+    
+    if (filters.equipmentType && filters.equipmentType.length > 0) {
+      query.type = { $in: filters.equipmentType };
+    }
+    
+    if (filters.status && filters.status.length > 0) {
+      query.status = { $in: filters.status };
+    }
+    
+    if (filters.department && filters.department.length > 0) {
+      query.department = { $in: filters.department };
+    }
+    
+    if (filters.purchaseDateStart && filters.purchaseDateEnd) {
+      query.purchaseDate = {
+        $gte: new Date(filters.purchaseDateStart),
+        $lte: new Date(filters.purchaseDateEnd)
+      };
+    }
+    
+    // Fetch equipment based on filter
+    const equipment = await EquipmentModel.find(query)
+      .populate('assignedTo', 'name email department')
+      .populate('lastMaintenanceBy', 'name email');
+    
+    // Calculate statistics
+    const statistics = {
+      total: equipment.length,
+      byType: {},
+      byStatus: {},
+      byDepartment: {},
+      averageAge: 0
+    };
+    
+    // Group data if requested
+    let groupedData = {};
+    if (groupBy) {
+      equipment.forEach(item => {
+        let groupValue;
+        
+        switch (groupBy) {
+          case 'type':
+            groupValue = item.type;
+            break;
+          case 'status':
+            groupValue = item.status;
+            break;
+          case 'department':
+            groupValue = item.department || 'Unassigned';
+            break;
+          case 'purchaseYear':
+            groupValue = item.purchaseDate ? new Date(item.purchaseDate).getFullYear().toString() : 'Unknown';
+            break;
+          default:
+            groupValue = 'All';
+        }
+        
+        if (!groupedData[groupValue]) {
+          groupedData[groupValue] = [];
+        }
+        
+        groupedData[groupValue].push(item);
+      });
+    }
+    
+    // Calculate statistics
+    equipment.forEach(item => {
+      // Count by type
+      if (!statistics.byType[item.type]) {
+        statistics.byType[item.type] = 0;
+      }
+      statistics.byType[item.type]++;
+      
+      // Count by status
+      if (!statistics.byStatus[item.status]) {
+        statistics.byStatus[item.status] = 0;
+      }
+      statistics.byStatus[item.status]++;
+      
+      // Count by department
+      const department = item.department || 'Unassigned';
+      if (!statistics.byDepartment[department]) {
+        statistics.byDepartment[department] = 0;
+      }
+      statistics.byDepartment[department]++;
+      
+      // Calculate age if purchase date is available
+      if (item.purchaseDate) {
+        const ageInDays = (new Date() - new Date(item.purchaseDate)) / (1000 * 60 * 60 * 24);
+        statistics.averageAge += ageInDays;
+      }
+    });
+    
+    // Calculate average age in years
+    if (equipment.filter(e => e.purchaseDate).length > 0) {
+      statistics.averageAge = (statistics.averageAge / equipment.filter(e => e.purchaseDate).length) / 365;
+    }
+    
+    // Get incident count for each equipment
+    for (let i = 0; i < equipment.length; i++) {
+      const incidentCount = await IncidentModel.countDocuments({ relatedEquipment: equipment[i]._id });
+      equipment[i] = equipment[i].toObject();
+      equipment[i].incidentCount = incidentCount;
+    }
+    
+    return {
+      equipment,
+      statistics,
+      groupedData: Object.keys(groupedData).length > 0 ? groupedData : null
+    };
+  }
+
+  /**
+   * Get user report data based on filters
+   * @param {Object} filters - Filters to apply
+   * @param {String} groupBy - Field to group by
+   * @returns {Object} Report data
+   * @private
+   */
+  async getUserReportData(filters, groupBy) {
+    // Build filter object based on provided filters
+    const query = {};
+    
+    if (filters.role && filters.role.length > 0) {
+      query.role = { $in: filters.role };
+    }
+    
+    if (filters.department && filters.department.length > 0) {
+      query.department = { $in: filters.department };
+    }
+    
+    if (filters.isActive !== undefined) {
+      query.isActive = filters.isActive;
+    }
+    
+    // Fetch users based on filter
+    const users = await UserModel.find(query).select('-password');
+    
+    // Calculate statistics
+    const statistics = {
+      total: users.length,
+      byRole: {},
+      byDepartment: {},
+      active: users.filter(u => u.isActive).length,
+      inactive: users.filter(u => !u.isActive).length
+    };
+    
+    // Group data if requested
+    let groupedData = {};
+    if (groupBy) {
+      users.forEach(user => {
+        let groupValue;
+        
+        switch (groupBy) {
+          case 'role':
+            groupValue = user.role;
+            break;
+          case 'department':
+            groupValue = user.department || 'Unassigned';
+            break;
+          case 'isActive':
+            groupValue = user.isActive ? 'Active' : 'Inactive';
+            break;
+          default:
+            groupValue = 'All';
+        }
+        
+        if (!groupedData[groupValue]) {
+          groupedData[groupValue] = [];
+        }
+        
+        groupedData[groupValue].push(user);
+      });
+    }
+    
+    // Calculate statistics
+    users.forEach(user => {
+      // Count by role
+      if (!statistics.byRole[user.role]) {
+        statistics.byRole[user.role] = 0;
+      }
+      statistics.byRole[user.role]++;
+      
+      // Count by department
+      const department = user.department || 'Unassigned';
+      if (!statistics.byDepartment[department]) {
+        statistics.byDepartment[department] = 0;
+      }
+      statistics.byDepartment[department]++;
+    });
+    
+    // Get incident counts for each user
+    for (let i = 0; i < users.length; i++) {
+      const reportedIncidents = await IncidentModel.countDocuments({ reportedBy: users[i]._id });
+      const assignedIncidents = await IncidentModel.countDocuments({ assignedTo: users[i]._id });
+      const resolvedIncidents = await IncidentModel.countDocuments({ 
+        assignedTo: users[i]._id,
+        status: 'resolved'
+      });
+      
+      users[i] = users[i].toObject();
+      users[i].reportedIncidents = reportedIncidents;
+      users[i].assignedIncidents = assignedIncidents;
+      users[i].resolvedIncidents = resolvedIncidents;
+    }
+    
+    return {
+      users,
+      statistics,
+      groupedData: Object.keys(groupedData).length > 0 ? groupedData : null
+    };
+  }
+
+  /**
+   * Get performance report data based on filters
+   * @param {Object} filters - Filters to apply
+   * @returns {Object} Report data
+   * @private
+   */
+  async getPerformanceReportData(filters) {
+    const startDate = filters.startDate ? new Date(filters.startDate) : new Date(new Date().setMonth(new Date().getMonth() - 1));
+    const endDate = filters.endDate ? new Date(filters.endDate) : new Date();
+    
+    // Get all incidents in the date range
+    const incidents = await IncidentModel.find({
+      createdAt: { $gte: startDate, $lte: endDate }
+    }).populate('assignedTo', 'name email department');
+    
+    // Calculate resolution times
+    const resolutionTimes = incidents
+      .filter(incident => incident.status === 'resolved' && incident.resolvedAt)
+      .map(incident => {
+        const createdAt = new Date(incident.createdAt);
+        const resolvedAt = new Date(incident.resolvedAt);
+        const resolutionTime = (resolvedAt - createdAt) / (1000 * 60 * 60); // in hours
+        
+        return {
+          id: incident._id,
+          title: incident.title,
+          priority: incident.priority,
+          assignedTo: incident.assignedTo ? incident.assignedTo.name : 'Unassigned',
+          department: incident.assignedTo ? incident.assignedTo.department : 'Unassigned',
+          resolutionTime
+        };
+      });
+    
+    // Calculate average resolution time by priority
+    const resolutionTimeByPriority = {};
+    resolutionTimes.forEach(item => {
+      if (!resolutionTimeByPriority[item.priority]) {
+        resolutionTimeByPriority[item.priority] = {
+          total: 0,
+          count: 0
+        };
+      }
+      
+      resolutionTimeByPriority[item.priority].total += item.resolutionTime;
+      resolutionTimeByPriority[item.priority].count++;
+    });
+    
+    Object.keys(resolutionTimeByPriority).forEach(priority => {
+      resolutionTimeByPriority[priority] = resolutionTimeByPriority[priority].total / resolutionTimeByPriority[priority].count;
+    });
+    
+    // Calculate average resolution time by assignee
+    const resolutionTimeByAssignee = {};
+    resolutionTimes.forEach(item => {
+      if (!resolutionTimeByAssignee[item.assignedTo]) {
+        resolutionTimeByAssignee[item.assignedTo] = {
+          total: 0,
+          count: 0
+        };
+      }
+      
+      resolutionTimeByAssignee[item.assignedTo].total += item.resolutionTime;
+      resolutionTimeByAssignee[item.assignedTo].count++;
+    });
+    
+    Object.keys(resolutionTimeByAssignee).forEach(assignee => {
+      resolutionTimeByAssignee[assignee] = resolutionTimeByAssignee[assignee].total / resolutionTimeByAssignee[assignee].count;
+    });
+    
+    // Calculate average resolution time by department
+    const resolutionTimeByDepartment = {};
+    resolutionTimes.forEach(item => {
+      if (!resolutionTimeByDepartment[item.department]) {
+        resolutionTimeByDepartment[item.department] = {
+          total: 0,
+          count: 0
+        };
+      }
+      
+      resolutionTimeByDepartment[item.department].total += item.resolutionTime;
+      resolutionTimeByDepartment[item.department].count++;
+    });
+    
+    Object.keys(resolutionTimeByDepartment).forEach(department => {
+      resolutionTimeByDepartment[department] = resolutionTimeByDepartment[department].total / resolutionTimeByDepartment[department].count;
+    });
+    
+    // Calculate incident volume by day
+    const incidentsByDay = {};
+    incidents.forEach(incident => {
+      const day = format(new Date(incident.createdAt), 'yyyy-MM-dd');
+      
+      if (!incidentsByDay[day]) {
+        incidentsByDay[day] = 0;
+      }
+      
+      incidentsByDay[day]++;
+    });
+    
+    // Calculate SLA compliance
+    const slaTargets = {
+      high: 4, // 4 hours
+      medium: 8, // 8 hours
+      low: 24 // 24 hours
+    };
+    
+    const slaCompliance = {
+      total: 0,
+      compliant: 0,
+      byPriority: {
+        high: { total: 0, compliant: 0 },
+        medium: { total: 0, compliant: 0 },
+        low: { total: 0, compliant: 0 }
+      }
+    };
+    
+    resolutionTimes.forEach(item => {
+      slaCompliance.total++;
+      slaCompliance.byPriority[item.priority].total++;
+      
+      if (item.resolutionTime <= slaTargets[item.priority]) {
+        slaCompliance.compliant++;
+        slaCompliance.byPriority[item.priority].compliant++;
+      }
+    });
+    
+    // Calculate percentages
+    if (slaCompliance.total > 0) {
+      slaCompliance.percentage = (slaCompliance.compliant / slaCompliance.total) * 100;
+      
+      Object.keys(slaCompliance.byPriority).forEach(priority => {
+        if (slaCompliance.byPriority[priority].total > 0) {
+          slaCompliance.byPriority[priority].percentage = 
+            (slaCompliance.byPriority[priority].compliant / slaCompliance.byPriority[priority].total) * 100;
+        } else {
+          slaCompliance.byPriority[priority].percentage = 0;
+        }
+      });
+    }
+    
+    return {
+      period: {
+        startDate,
+        endDate
+      },
+      incidents: {
+        total: incidents.length,
+        resolved: incidents.filter(i => i.status === 'resolved').length,
+        pending: incidents.filter(i => i.status === 'pending').length,
+        inProgress: incidents.filter(i => i.status === 'in-progress').length
+      },
+      resolutionTimes,
+      averages: {
+        byPriority: resolutionTimeByPriority,
+        byAssignee: resolutionTimeByAssignee,
+        byDepartment: resolutionTimeByDepartment
+      },
+      incidentsByDay,
+      slaCompliance
+    };
+  }
+
+  /**
+   * Generate a PDF report
+   * @param {Object} data - Report data
+   * @param {String} title - Report title
+   * @param {String} type - Report type
+   * @param {Boolean} includeCharts - Whether to include charts
+   * @returns {String} Report file URL
+   * @private
+   */
+  async generatePDFReport(data, title, type, includeCharts) {
+    return new Promise((resolve, reject) => {
+      try {
+        // Create directory if it doesn't exist
+        const dir = path.join(__dirname, '..', '..', 'public', 'reports');
+        if (!fs.existsSync(dir)) {
+          fs.mkdirSync(dir, { recursive: true });
+        }
+        
+        // Create a unique filename
+        const filename = `report_${type}_${Date.now()}.pdf`;
+        const filepath = path.join(dir, filename);
+        
+        // Create a new PDF document
+        const doc = new PDFDocument({ margin: 50 });
+        const stream = fs.createWriteStream(filepath);
+        
+        // Pipe the PDF to the file
+        doc.pipe(stream);
+        
+        // Add title
+        doc.fontSize(20).text(title, { align: 'center' });
+        doc.moveDown();
+        
+        // Add generation date
+        doc.fontSize(12).text(`Generated on: ${format(new Date(), 'PPP pp')}`, { align: 'center' });
+        doc.moveDown(2);
+        
+        // Add content based on report type
+        switch (type) {
+          case 'incidents':
+            this.addIncidentReportContent(doc, data);
+            break;
+          case 'equipment':
+            this.addEquipmentReportContent(doc, data);
+            break;
+          case 'users':
+            this.addUserReportContent(doc, data);
+            break;
+          case 'performance':
+            this.addPerformanceReportContent(doc, data);
+            break;
+        }
+        
+        // Finalize the PDF
+        doc.end();
+        
+        // Wait for the stream to finish
+        stream.on('finish', () => {
+          resolve(`/public/reports/${filename}`);
+        });
+        
+        stream.on('error', (error) => {
+          reject(error);
+        });
+      } catch (error) {
+        reject(error);
+      }
+    });
+  }
+
+  /**
+   * Generate an Excel report
+   * @param {Object} data - Report data
+   * @param {String} title - Report title
+   * @param {String} type - Report type
+   * @returns {String} Report file URL
+   * @private
+   */
+  async generateExcelReport(data, title, type) {
+    try {
+      // Create directory if it doesn't exist
+      const dir = path.join(__dirname, '..', '..', 'public', 'reports');
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      
+      // Create a unique filename
+      const filename = `report_${type}_${Date.now()}.xlsx`;
+      const filepath = path.join(dir, filename);
+      
+      // Create a new workbook
+      const workbook = xlsx.utils.book_new();
+      
+      // Add metadata
+      workbook.Props = {
+        Title: title,
+        Subject: `${type.charAt(0).toUpperCase() + type.slice(1)} Report`,
+        Author: 'IT Service Desk',
+        CreatedDate: new Date()
+      };
+      
+      // Add worksheets based on report type
+      switch (type) {
+        case 'incidents':
+          this.addIncidentWorksheets(workbook, data);
+          break;
+        case 'equipment':
+          this.addEquipmentWorksheets(workbook, data);
+          break;
+        case 'users':
+          this.addUserWorksheets(workbook, data);
+          break;
+        case 'performance':
+          this.addPerformanceWorksheets(workbook, data);
+          break;
+      }
+      
+      // Write the workbook to file
+      xlsx.writeFile(workbook, filepath);
+      
+      return `/public/reports/${filename}`;
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  /**
+   * Generate a CSV report
+   * @param {Object} data - Report data
+   * @param {String} title - Report title
+   * @param {String} type - Report type
+   * @returns {String} Report file URL
+   * @private
+   */
+  async generateCSVReport(data, title, type) {
+    try {
+      // Create directory if it doesn't exist
+      const dir = path.join(__dirname, '..', '..', 'public', 'reports');
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      
+      // Create a unique filename
+      const filename = `report_${type}_${Date.now()}.csv`;
+      const filepath = path.join(dir, filename);
+      
+      let csvContent = '';
+      
+      // Generate CSV content based on report type
+      switch (type) {
+        case 'incidents':
+          csvContent = this.generateIncidentCSV(data);
+          break;
+        case 'equipment':
+          csvContent = this.generateEquipmentCSV(data);
+          break;
+        case 'users':
+          csvContent = this.generateUserCSV(data);
+          break;
+        case 'performance':
+          csvContent = this.generatePerformanceCSV(data);
+          break;
+      }
+      
+      // Write to file
+      fs.writeFileSync(filepath, csvContent);
+      
+      return `/public/reports/${filename}`;
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  /**
+   * Add incident report content to PDF
+   * @param {PDFDocument} doc - PDF document
+   * @param {Object} data - Report data
+   * @private
+   */
+  addIncidentReportContent(doc, data) {
+    const { incidents, statistics } = data;
+    
+    // Add summary section
+    doc.fontSize(16).text('Summary', { underline: true });
+    doc.moveDown();
+    
+    doc.fontSize(12).text(`Total Incidents: ${statistics.total}`);
+    doc.moveDown();
+    
+    // Add status breakdown
+    doc.text('Status Breakdown:');
+    Object.entries(statistics.byStatus).forEach(([status, count]) => {
+      doc.text(`  ${status}: ${count} (${((count / statistics.total) * 100).toFixed(1)}%)`);
+    });
+    doc.moveDown();
+    
+    // Add priority breakdown
+    doc.text('Priority Breakdown:');
+    Object.entries(statistics.byPriority).forEach(([priority, count]) => {
+      doc.text(`  ${priority}: ${count} (${((count / statistics.total) * 100).toFixed(1)}%)`);
+    });
+    doc.moveDown();
+    
+    // Add average resolution time
+    doc.text(`Average Resolution Time: ${statistics.averageResolutionTime.toFixed(1)} hours`);
+    doc.moveDown();
+    
+    // Add resolution time by priority if available
+    if (statistics.resolutionTimeByPriority) {
+      doc.text('Average Resolution Time by Priority:');
+      Object.entries(statistics.resolutionTimeByPriority).forEach(([priority, time]) => {
+        doc.text(`  ${priority}: ${time.toFixed(1)} hours`);
+      });
+      doc.moveDown();
+    }
+    
+    // Add incident details
+    doc.addPage();
+    doc.fontSize(16).text('Incident Details', { underline: true });
+    doc.moveDown();
+    
+    // Create a table-like structure for incidents
+    incidents.forEach((incident, index) => {
+      doc.fontSize(12).text(`#${index + 1}: ${incident.title}`, { underline: true });
+      doc.fontSize(10).text(`ID: ${incident._id}`);
+      doc.text(`Status: ${incident.status}`);
+      doc.text(`Priority: ${incident.priority}`);
+      doc.text(`Reported By: ${incident.reportedBy ? incident.reportedBy.name : 'Unknown'}`);
+      doc.text(`Assigned To: ${incident.assignedTo ? incident.assignedTo.name : 'Unassigned'}`);
+      doc.text(`Created: ${format(new Date(incident.createdAt), 'PPP pp')}`);
+      
+      if (incident.resolvedAt) {
+        doc.text(`Resolved: ${format(new Date(incident.resolvedAt), 'PPP pp')}`);
+      }
+      
+      if (incident.description) {
+        doc.text(`Description: ${incident.description}`);
+      }
+      
+      doc.moveDown();
+    });
+  }
+
+  /**
+   * Add equipment report content to PDF
+   * @param {PDFDocument} doc - PDF document
+   * @param {Object} data - Report data
+   * @private
+   */
+  addEquipmentReportContent(doc, data) {
+    const { equipment, statistics } = data;
+    
+    // Add summary section
+    doc.fontSize(16).text('Summary', { underline: true });
+    doc.moveDown();
+    
+    doc.fontSize(12).text(`Total Equipment: ${statistics.total}`);
+    doc.moveDown();
+    
+    // Add type breakdown
+    doc.text('Type Breakdown:');
+    Object.entries(statistics.byType).forEach(([type, count]) => {
+      doc.text(`  ${type}: ${count} (${((count / statistics.total) * 100).toFixed(1)}%)`);
+    });
+    doc.moveDown();
+    
+    // Add status breakdown
+    doc.text('Status Breakdown:');
+    Object.entries(statistics.byStatus).forEach(([status, count]) => {
+      doc.text(`  ${status}: ${count} (${((count / statistics.total) * 100).toFixed(1)}%)`);
+    });
+    doc.moveDown();
+    
+    // Add department breakdown
+    doc.text('Department Breakdown:');
+    Object.entries(statistics.byDepartment).forEach(([department, count]) => {
+      doc.text(`  ${department}: ${count} (${((count / statistics.total) * 100).toFixed(1)}%)`);
+    });
+    doc.moveDown();
+    
+    // Add average age
+    doc.text(`Average Age: ${statistics.averageAge.toFixed(1)} years`);
+    doc.moveDown();
+    
+    // Add equipment details
+    doc.addPage();
+    doc.fontSize(16).text('Equipment Details', { underline: true });
+    doc.moveDown();
+    
+    // Create a table-like structure for equipment
+    equipment.forEach((item, index) => {
+      doc.fontSize(12).text(`#${index + 1}: ${item.name}`, { underline: true });
+      doc.fontSize(10).text(`ID: ${item._id}`);
+      doc.text(`Type: ${item.type}`);
+      doc.text(`Status: ${item.status}`);
+      doc.text(`Serial Number: ${item.serialNumber || 'N/A'}`);
+      doc.text(`Department: ${item.department || 'Unassigned'}`);
+      doc.text(`Assigned To: ${item.assignedTo ? item.assignedTo.name : 'Unassigned'}`);
+      
+      if (item.purchaseDate) {
+        doc.text(`Purchase Date: ${format(new Date(item.purchaseDate), 'PPP')}`);
+      }
+      
+      if (item.lastMaintenanceDate) {
+        doc.text(`Last Maintenance: ${format(new Date(item.lastMaintenanceDate), 'PPP')}`);
+      }
+      
+      doc.text(`Incident Count: ${item.incidentCount || 0}`);
+      
+      doc.moveDown();
+    });
+  }
+
+  /**
+   * Add user report content to PDF
+   * @param {PDFDocument} doc - PDF document
+   * @param {Object} data - Report data
+   * @private
+   */
+  addUserReportContent(doc, data) {
+    const { users, statistics } = data;
+    
+    // Add summary section
+    doc.fontSize(16).text('Summary', { underline: true });
+    doc.moveDown();
+    
+    doc.fontSize(12).text(`Total Users: ${statistics.total}`);
+    doc.text(`Active Users: ${statistics.active} (${((statistics.active / statistics.total) * 100).toFixed(1)}%)`);
+    doc.text(`Inactive Users: ${statistics.inactive} (${((statistics.inactive / statistics.total) * 100).toFixed(1)}%)`);
+    doc.moveDown();
+    
+    // Add role breakdown
+    doc.text('Role Breakdown:');
+    Object.entries(statistics.byRole).forEach(([role, count]) => {
+      doc.text(`  ${role}: ${count} (${((count / statistics.total) * 100).toFixed(1)}%)`);
+    });
+    doc.moveDown();
+    
+    // Add department breakdown
+    doc.text('Department Breakdown:');
+    Object.entries(statistics.byDepartment).forEach(([department, count]) => {
+      doc.text(`  ${department}: ${count} (${((count / statistics.total) * 100).toFixed(1)}%)`);
+    });
+    doc.moveDown();
+    
+    // Add user details
+    doc.addPage();
+    doc.fontSize(16).text('User Details', { underline: true });
+    doc.moveDown();
+    
+    // Create a table-like structure for users
+    users.forEach((user, index) => {
+      doc.fontSize(12).text(`#${index + 1}: ${user.name}`, { underline: true });
+      doc.fontSize(10).text(`ID: ${user._id}`);
+      doc.text(`Email: ${user.email}`);
+      doc.text(`Role: ${user.role}`);
+      doc.text(`Department: ${user.department || 'Unassigned'}`);
+      doc.text(`Status: ${user.isActive ? 'Active' : 'Inactive'}`);
+      doc.text(`Reported Incidents: ${user.reportedIncidents || 0}`);
+      doc.text(`Assigned Incidents: ${user.assignedIncidents || 0}`);
+      doc.text(`Resolved Incidents: ${user.resolvedIncidents || 0}`);
+      
+      doc.moveDown();
+    });
+  }
+
+  /**
+   * Add performance report content to PDF
+   * @param {PDFDocument} doc - PDF document
+   * @param {Object} data - Report data
+   * @private
+   */
+  addPerformanceReportContent(doc, data) {
+    const { period, incidents, averages, slaCompliance } = data;
+    
+    // Add summary section
+    doc.fontSize(16).text('Performance Summary', { underline: true });
+    doc.moveDown();
+    
+    doc.fontSize(12).text(`Period: ${format(period.startDate, 'PPP')} to ${format(period.endDate, 'PPP')}`);
+    doc.moveDown();
+    
+    // Add incident summary
+    doc.text(`Total Incidents: ${incidents.total}`);
+    doc.text(`Resolved Incidents: ${incidents.resolved} (${((incidents.resolved / incidents.total) * 100).toFixed(1)}%)`);
+    doc.text(`Pending Incidents: ${incidents.pending} (${((incidents.pending / incidents.total) * 100).toFixed(1)}%)`);
+    doc.text(`In Progress Incidents: ${incidents.inProgress} (${((incidents.inProgress / incidents.total) * 100).toFixed(1)}%)`);
+    doc.moveDown();
+    
+    // Add SLA compliance
+    doc.text(`SLA Compliance: ${slaCompliance.percentage ? slaCompliance.percentage.toFixed(1) : 0}%`);
+    doc.text('SLA Compliance by Priority:');
+    Object.entries(slaCompliance.byPriority).forEach(([priority, data]) => {
+      doc.text(`  ${priority}: ${data.percentage ? data.percentage.toFixed(1) : 0}% (${data.compliant}/${data.total})`);
+    });
+    doc.moveDown();
+    
+    // Add resolution time averages
+    doc.text('Average Resolution Time by Priority:');
+    Object.entries(averages.byPriority).forEach(([priority, time]) => {
+      doc.text(`  ${priority}: ${time.toFixed(1)} hours`);
+    });
+    doc.moveDown();
+    
+    // Add top performers
+    doc.addPage();
+    doc.fontSize(16).text('Performance by Assignee', { underline: true });
+    doc.moveDown();
+    
+    // Sort assignees by resolution time
+    const sortedAssignees = Object.entries(averages.byAssignee)
+      .sort(([, timeA], [, timeB]) => timeA - timeB)
+      .slice(0, 10);
+    
+    sortedAssignees.forEach(([assignee, time], index) => {
+      doc.text(`${index + 1}. ${assignee}: ${time.toFixed(1)} hours average resolution time`);
+    });
+    
+    doc.moveDown(2);
+    
+    // Add department performance
+    doc.fontSize(16).text('Performance by Department', { underline: true });
+    doc.moveDown();
+    
+    // Sort departments by resolution time
+    const sortedDepartments = Object.entries(averages.byDepartment)
+      .sort(([, timeA], [, timeB]) => timeA - timeB);
+    
+    sortedDepartments.forEach(([department, time]) => {
+      doc.text(`${department}: ${time.toFixed(1)} hours average resolution time`);
+    });
+  }
+
+  /**
+   * Add incident worksheets to Excel workbook
+   * @param {Workbook} workbook - Excel workbook
+   * @param {Object} data - Report data
+   * @private
+   */
+  addIncidentWorksheets(workbook, data) {
+    const { incidents, statistics, groupedData } = data;
+    
+    // Create incidents worksheet
+    const incidentRows = incidents.map(incident => ({
+      ID: incident._id.toString(),
+      Title: incident.title,
+      Status: incident.status,
+      Priority: incident.priority,
+      'Reported By': incident.reportedBy ? incident.reportedBy.name : 'Unknown',
+      'Reporter Email': incident.reportedBy ? incident.reportedBy.email : 'Unknown',
+      'Reporter Department': incident.reportedBy ? incident.reportedBy.department : 'Unknown',
+      'Assigned To': incident.assignedTo ? incident.assignedTo.name : 'Unassigned',
+      'Assignee Email': incident.assignedTo ? incident.assignedTo.email : 'Unknown',
+      'Assignee Department': incident.assignedTo ? incident.assignedTo.department : 'Unknown',
+      'Related Equipment': incident.relatedEquipment ? incident.relatedEquipment.name : 'None',
+      'Created At': format(new Date(incident.createdAt), 'PPP pp'),
+      'Resolved At': incident.resolvedAt ? format(new Date(incident.resolvedAt), 'PPP pp') : 'Not resolved',
+      'Resolution Time (hours)': incident.resolvedAt ? 
+        ((new Date(incident.resolvedAt) - new Date(incident.createdAt)) / (1000 * 60 * 60)).toFixed(1) : 'N/A',
+      Description: incident.description || ''
+    }));
+    
+    const incidentSheet = xlsx.utils.json_to_sheet(incidentRows);
+    xlsx.utils.book_append_sheet(workbook, incidentSheet, 'Incidents');
+    
+    // Create statistics worksheet
+    const statsRows = [
+      { Metric: 'Total Incidents', Value: statistics.total }
+    ];
+    
+    // Add status breakdown
+    Object.entries(statistics.byStatus).forEach(([status, count]) => {
+      statsRows.push({
+        Metric: `Status: ${status}`,
+        Value: count,
+        Percentage: `${((count / statistics.total) * 100).toFixed(1)}%`
+      });
+    });
+    
+    // Add priority breakdown
+    Object.entries(statistics.byPriority).forEach(([priority, count]) => {
+      statsRows.push({
+        Metric: `Priority: ${priority}`,
+        Value: count,
+        Percentage: `${((count / statistics.total) * 100).toFixed(1)}%`
+      });
+    });
+    
+    // Add assignee breakdown if available
+    if (statistics.byAssignee) {
+      Object.entries(statistics.byAssignee).forEach(([assignee, count]) => {
+        statsRows.push({
+          Metric: `Assignee: ${assignee}`,
+          Value: count,
+          Percentage: `${((count / statistics.total) * 100).toFixed(1)}%`
+        });
+      });
+    }
+    
+    // Add average resolution time
+    statsRows.push({
+      Metric: 'Average Resolution Time (hours)',
+      Value: statistics.averageResolutionTime.toFixed(1)
+    });
+    
+    // Add resolution time by priority if available
+    if (statistics.resolutionTimeByPriority) {
+      Object.entries(statistics.resolutionTimeByPriority).forEach(([priority, time]) => {
+        statsRows.push({
+          Metric: `Avg Resolution Time - ${priority} (hours)`,
+          Value: time.toFixed(1)
+        });
+      });
+    }
+    
+    const statsSheet = xlsx.utils.json_to_sheet(statsRows);
+    xlsx.utils.book_append_sheet(workbook, statsSheet, 'Statistics');
+    
+    // Add grouped data if available
+    if (groupedData) {
+      Object.entries(groupedData).forEach(([group, groupIncidents]) => {
+        const groupRows = groupIncidents.map(incident => ({
+          ID: incident._id.toString(),
+          Title: incident.title,
+          Status: incident.status,
+          Priority: incident.priority,
+          'Reported By': incident.reportedBy ? incident.reportedBy.name : 'Unknown',
+          'Assigned To': incident.assignedTo ? incident.assignedTo.name : 'Unassigned',
+          'Created At': format(new Date(incident.createdAt), 'PPP pp'),
+          'Resolved At': incident.resolvedAt ? format(new Date(incident.resolvedAt), 'PPP pp') : 'Not resolved'
+        }));
+        
+        const groupSheet = xlsx.utils.json_to_sheet(groupRows);
+        xlsx.utils.book_append_sheet(workbook, groupSheet, `Group - ${group.substring(0, 28)}`);
+      });
+    }
+  }
+
+  /**
+   * Add equipment worksheets to Excel workbook
+   * @param {Workbook} workbook - Excel workbook
+   * @param {Object} data - Report data
+   * @private
+   */
+  addEquipmentWorksheets(workbook, data) {
+    const { equipment, statistics, groupedData } = data;
+    
+    // Create equipment worksheet
+    const equipmentRows = equipment.map(item => ({
+      ID: item._id.toString(),
+      Name: item.name,
+      Type: item.type,
+      Status: item.status,
+      'Serial Number': item.serialNumber || 'N/A',
+      Department: item.department || 'Unassigned',
+      'Assigned To': item.assignedTo ? item.assignedTo.name : 'Unassigned',
+      'Assignee Email': item.assignedTo ? item.assignedTo.email : 'N/A',
+      'Purchase Date': item.purchaseDate ? format(new Date(item.purchaseDate), 'PPP') : 'Unknown',
+      'Last Maintenance': item.lastMaintenanceDate ? format(new Date(item.lastMaintenanceDate), 'PPP') : 'Never',
+      'Maintained By': item.lastMaintenanceBy ? item.lastMaintenanceBy.name : 'N/A',
+      'Incident Count': item.incidentCount || 0,
+      Notes: item.notes || ''
+    }));
+    
+    const equipmentSheet = xlsx.utils.json_to_sheet(equipmentRows);
+    xlsx.utils.book_append_sheet(workbook, equipmentSheet, 'Equipment');
+    
+    // Create statistics worksheet
+    const statsRows = [
+      { Metric: 'Total Equipment', Value: statistics.total }
+    ];
+    
+    // Add type breakdown
+    Object.entries(statistics.byType).forEach(([type, count]) => {
+      statsRows.push({
+        Metric: `Type: ${type}`,
+        Value: count,
+        Percentage: `${((count / statistics.total) * 100).toFixed(1)}%`
+      });
+    });
+    
+    // Add status breakdown
+    Object.entries(statistics.byStatus).forEach(([status, count]) => {
+      statsRows.push({
+        Metric: `Status: ${status}`,
+        Value: count,
+        Percentage: `${((count / statistics.total) * 100).toFixed(1)}%`
+      });
+    });
+    
+    // Add department breakdown
+    Object.entries(statistics.byDepartment).forEach(([department, count]) => {
+      statsRows.push({
+        Metric: `Department: ${department}`,
+        Value: count,
+        Percentage: `${((count / statistics.total) * 100).toFixed(1)}%`
+      });
+    });
+    
+    // Add average age
+    statsRows.push({
+      Metric: 'Average Age (years)',
+      Value: statistics.averageAge.toFixed(1)
+    });
+    
+    const statsSheet = xlsx.utils.json_to_sheet(statsRows);
+    xlsx.utils.book_append_sheet(workbook, statsSheet, 'Statistics');
+    
+    // Add grouped data if available
+    if (groupedData) {
+      Object.entries(groupedData).forEach(([group, groupEquipment]) => {
+        const groupRows = groupEquipment.map(item => ({
+          ID: item._id.toString(),
+          Name: item.name,
+          Type: item.type,
+          Status: item.status,
+          'Serial Number': item.serialNumber || 'N/A',
+          Department: item.department || 'Unassigned',
+          'Assigned To': item.assignedTo ? item.assignedTo.name : 'Unassigned'
+        }));
+        
+        const groupSheet = xlsx.utils.json_to_sheet(groupRows);
+        xlsx.utils.book_append_sheet(workbook, groupSheet, `Group - ${group.substring(0, 28)}`);
+      });
+    }
+  }
+
+  /**
+   * Add user worksheets to Excel workbook
+   * @param {Workbook} workbook - Excel workbook
+   * @param {Object} data - Report data
+   * @private
+   */
+  addUserWorksheets(workbook, data) {
+    const { users, statistics, groupedData } = data;
+    
+    // Create users worksheet
+    const userRows = users.map(user => ({
+      ID: user._id.toString(),
+      Name: user.name,
+      Email: user.email,
+      Role: user.role,
+      Department: user.department || 'Unassigned',
+      Status: user.isActive ? 'Active' : 'Inactive',
+      'Reported Incidents': user.reportedIncidents || 0,
+      'Assigned Incidents': user.assignedIncidents || 0,
+      'Resolved Incidents': user.resolvedIncidents || 0,
+      'Created At': format(new Date(user.createdAt), 'PPP')
+    }));
+    
+    const userSheet = xlsx.utils.json_to_sheet(userRows);
+    xlsx.utils.book_append_sheet(workbook, userSheet, 'Users');
+    
+    // Create statistics worksheet
+    const statsRows = [
+      { Metric: 'Total Users', Value: statistics.total },
+      { Metric: 'Active Users', Value: statistics.active, Percentage: `${((statistics.active / statistics.total) * 100).toFixed(1)}%` },
+      { Metric: 'Inactive Users', Value: statistics.inactive, Percentage: `${((statistics.inactive / statistics.total) * 100).toFixed(1)}%` }
+    ];
+    
+    // Add role breakdown
+    Object.entries(statistics.byRole).forEach(([role, count]) => {
+      statsRows.push({
+        Metric: `Role: ${role}`,
+        Value: count,
+        Percentage: `${((count / statistics.total) * 100).toFixed(1)}%`
+      });
+    });
+    
+    // Add department breakdown
+    Object.entries(statistics.byDepartment).forEach(([department, count]) => {
+      statsRows.push({
+        Metric: `Department: ${department}`,
+        Value: count,
+        Percentage: `${((count / statistics.total) * 100).toFixed(1)}%`
+      });
+    });
+    
+    const statsSheet = xlsx.utils.json_to_sheet(statsRows);
+    xlsx.utils.book_append_sheet(workbook, statsSheet, 'Statistics');
+    
+    // Add grouped data if available
+    if (groupedData) {
+      Object.entries(groupedData).forEach(([group, groupUsers]) => {
+        const groupRows = groupUsers.map(user => ({
+          ID: user._id.toString(),
+          Name: user.name,
+          Email: user.email,
+          Role: user.role,
+          Department: user.department || 'Unassigned',
+          Status: user.isActive ? 'Active' : 'Inactive',
+          'Reported Incidents': user.reportedIncidents || 0,
+          'Assigned Incidents': user.assignedIncidents || 0,
+          'Resolved Incidents': user.resolvedIncidents || 0
+        }));
+        
+        const groupSheet = xlsx.utils.json_to_sheet(groupRows);
+        xlsx.utils.book_append_sheet(workbook, groupSheet, `Group - ${group.substring(0, 28)}`);
+      });
+    }
+  }
+
+  /**
+   * Add performance worksheets to Excel workbook
+   * @param {Workbook} workbook - Excel workbook
+   * @param {Object} data - Report data
+   * @private
+   */
+  addPerformanceWorksheets(workbook, data) {
+    const { period, incidents, resolutionTimes, averages, incidentsByDay, slaCompliance } = data;
+    
+    // Create summary worksheet
+    const summaryRows = [
+      { Metric: 'Report Period', Value: `${format(period.startDate, 'PPP')} to ${format(period.endDate, 'PPP')}` },
+      { Metric: 'Total Incidents', Value: incidents.total },
+      { Metric: 'Resolved Incidents', Value: incidents.resolved, Percentage: `${((incidents.resolved / incidents.total) * 100).toFixed(1)}%` },
+      { Metric: 'Pending Incidents', Value: incidents.pending, Percentage: `${((incidents.pending / incidents.total) * 100).toFixed(1)}%` },
+      { Metric: 'In Progress Incidents', Value: incidents.inProgress, Percentage: `${((incidents.inProgress / incidents.total) * 100).toFixed(1)}%` },
+      { Metric: 'SLA Compliance', Value: `${slaCompliance.percentage ? slaCompliance.percentage.toFixed(1) : 0}%` }
+    ];
+    
+    // Add SLA compliance by priority
+    Object.entries(slaCompliance.byPriority).forEach(([priority, data]) => {
+      summaryRows.push({
+        Metric: `SLA Compliance - ${priority}`,
+        Value: `${data.percentage ? data.percentage.toFixed(1) : 0}%`,
+        Details: `${data.compliant}/${data.total}`
+      });
+    });
+    
+    // Add resolution time averages by priority
+    Object.entries(averages.byPriority).forEach(([priority, time]) => {
+      summaryRows.push({
+        Metric: `Avg Resolution Time - ${priority}`,
+        Value: `${time.toFixed(1)} hours`
+      });
+    });
+    
+    const summarySheet = xlsx.utils.json_to_sheet(summaryRows);
+    xlsx.utils.book_append_sheet(workbook, summarySheet, 'Summary');
+    
+    // Create resolution times worksheet
+    const resolutionSheet = xlsx.utils.json_to_sheet(resolutionTimes);
+    xlsx.utils.book_append_sheet(workbook, resolutionSheet, 'Resolution Times');
+    
+    // Create assignee performance worksheet
+    const assigneeRows = Object.entries(averages.byAssignee).map(([assignee, time]) => ({
+      Assignee: assignee,
+      'Average Resolution Time (hours)': time.toFixed(1)
+    })).sort((a, b) => parseFloat(a['Average Resolution Time (hours)']) - parseFloat(b['Average Resolution Time (hours)']));
+    
+    const assigneeSheet = xlsx.utils.json_to_sheet(assigneeRows);
+    xlsx.utils.book_append_sheet(workbook, assigneeSheet, 'Assignee Performance');
+    
+    // Create department performance worksheet
+    const departmentRows = Object.entries(averages.byDepartment).map(([department, time]) => ({
+      Department: department,
+      'Average Resolution Time (hours)': time.toFixed(1)
+    })).sort((a, b) => parseFloat(a['Average Resolution Time (hours)']) - parseFloat(b['Average Resolution Time (hours)']));
+    
+    const departmentSheet = xlsx.utils.json_to_sheet(departmentRows);
+    xlsx.utils.book_append_sheet(workbook, departmentSheet, 'Department Performance');
+    
+    // Create daily incident volume worksheet
+    const dailyRows = Object.entries(incidentsByDay).map(([day, count]) => ({
+      Date: day,
+      'Incident Count': count
+    })).sort((a, b) => a.Date.localeCompare(b.Date));
+    
+    const dailySheet = xlsx.utils.json_to_sheet(dailyRows);
+    xlsx.utils.book_append_sheet(workbook, dailySheet, 'Daily Incident Volume');
+  }
+
+  /**
+   * Generate CSV content for incident report
+   * @param {Object} data - Report data
+   * @returns {String} CSV content
+   * @private
+   */
+  generateIncidentCSV(data) {
+    const { incidents } = data;
+    
+    // Create header row
+    let csv = 'ID,Title,Status,Priority,Reported By,Reporter Email,Reporter Department,Assigned To,Assignee Email,Assignee Department,Related Equipment,Created At,Resolved At,Resolution Time (hours),Description\n';
+    
+    // Add data rows
+    incidents.forEach(incident => {
+      const row = [
+        `"${incident._id}"`,
+        `"${incident.title.replace(/"/g, '""')}"`,
+        `"${incident.status}"`,
+        `"${incident.priority}"`,
+        `"${incident.reportedBy ? incident.reportedBy.name.replace(/"/g, '""') : 'Unknown'}"`,
+        `"${incident.reportedBy ? incident.reportedBy.email : 'Unknown'}"`,
+        `"${incident.reportedBy && incident.reportedBy.department ? incident.reportedBy.department : 'Unknown'}"`,
+        `"${incident.assignedTo ? incident.assignedTo.name.replace(/"/g, '""') : 'Unassigned'}"`,
+        `"${incident.assignedTo ? incident.assignedTo.email : ''}"`,
+        `"${incident.assignedTo && incident.assignedTo.department ? incident.assignedTo.department : ''}"`,
+        `"${incident.relatedEquipment ? incident.relatedEquipment.name.replace(/"/g, '""') : 'None'}"`,
+        `"${format(new Date(incident.createdAt), 'PPP pp')}"`,
+        `"${incident.resolvedAt ? format(new Date(incident.resolvedAt), 'PPP pp') : 'Not resolved'}"`,
+        `"${incident.resolvedAt ? ((new Date(incident.resolvedAt) - new Date(incident.createdAt)) / (1000 * 60 * 60)).toFixed(1) : 'N/A'}"`,
+        `"${incident.description ? incident.description.replace(/"/g, '""').replace(/\n/g, ' ') : ''}"`
+      ];
+      
+      csv += row.join(',') + '\n';
+    });
+    
+    return csv;
+  }
+
+  /**
+   * Generate CSV content for equipment report
+   * @param {Object} data - Report data
+   * @returns {String} CSV content
+   * @private
+   */
+  generateEquipmentCSV(data) {
+    const { equipment } = data;
+    
+    // Create header row
+    let csv = 'ID,Name,Type,Status,Serial Number,Department,Assigned To,Assignee Email,Purchase Date,Last Maintenance,Maintained By,Incident Count,Notes\n';
+    
+    // Add data rows
+    equipment.forEach(item => {
+      const row = [
+        `"${item._id}"`,
+        `"${item.name.replace(/"/g, '""')}"`,
+        `"${item.type}"`,
+        `"${item.status}"`,
+        `"${item.serialNumber || 'N/A'}"`,
+        `"${item.department || 'Unassigned'}"`,
+        `"${item.assignedTo ? item.assignedTo.name.replace(/"/g, '""') : 'Unassigned'}"`,
+        `"${item.assignedTo ? item.assignedTo.email : 'N/A'}"`,
+        `"${item.purchaseDate ? format(new Date(item.purchaseDate), 'PPP') : 'Unknown'}"`,
+        `"${item.lastMaintenanceDate ? format(new Date(item.lastMaintenanceDate), 'PPP') : 'Never'}"`,
+        `"${item.lastMaintenanceBy ? item.lastMaintenanceBy.name.replace(/"/g, '""') : 'N/A'}"`,
+        `"${item.incidentCount || 0}"`,
+        `"${item.notes ? item.notes.replace(/"/g, '""').replace(/\n/g, ' ') : ''}"`
+      ];
+      
+      csv += row.join(',') + '\n';
+    });
+    
+    return csv;
+  }
+
+  /**
+   * Generate CSV content for user report
+   * @param {Object} data - Report data
+   * @returns {String} CSV content
+   * @private
+   */
+  generateUserCSV(data) {
+    const { users } = data;
+    
+    // Create header row
+    let csv = 'ID,Name,Email,Role,Department,Status,Reported Incidents,Assigned Incidents,Resolved Incidents,Created At\n';
+    
+    // Add data rows
+    users.forEach(user => {
+      const row = [
+        `"${user._id}"`,
+        `"${user.name.replace(/"/g, '""')}"`,
+        `"${user.email}"`,
+        `"${user.role}"`,
+        `"${user.department || 'Unassigned'}"`,
+        `"${user.isActive ? 'Active' : 'Inactive'}"`,
+        `"${user.reportedIncidents || 0}"`,
+        `"${user.assignedIncidents || 0}"`,
+        `"${user.resolvedIncidents || 0}"`,
+        `"${format(new Date(user.createdAt), 'PPP')}"`
+      ];
+      
+      csv += row.join(',') + '\n';
+    });
+    
+    return csv;
+  }
+
+  /**
+   * Generate CSV content for performance report
+   * @param {Object} data - Report data
+   * @returns {String} CSV content
+   * @private
+   */
+  generatePerformanceCSV(data) {
+    const { resolutionTimes } = data;
+    
+    // Create header row
+    let csv = 'ID,Title,Priority,Assigned To,Department,Resolution Time (hours)\n';
+    
+    // Add data rows
+    resolutionTimes.forEach(item => {
+      const row = [
+        `"${item.id}"`,
+        `"${item.title.replace(/"/g, '""')}"`,
+        `"${item.priority}"`,
+        `"${item.assignedTo.replace(/"/g, '""')}"`,
+        `"${item.department || 'Unassigned'}"`,
+        `"${item.resolutionTime.toFixed(1)}"`
+      ];
+      
+      csv += row.join(',') + '\n';
+    });
+    
+    return csv;
+  }
+}
+
+module.exports = new ReportController();

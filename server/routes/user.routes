@@ -1,0 +1,204 @@
+/**
+ * IT Service Desk - User Routes
+ * 
+ * This file defines all user-related routes for the application.
+ * It handles user management, profile operations, and user-specific actions.
+ */
+const express = require('express');
+const router = express.Router();
+const authController = require('../controllers/auth.controller');
+const authMiddleware = require('../middleware/auth.middleware');
+const roleMiddleware = require('../middleware/role.middleware');
+const validationMiddleware = require('../middleware/validation.middleware');
+const { ROLES } = require('../utils/constants');
+
+/**
+ * @route   GET /api/users
+ * @desc    Get all users (with pagination, filtering, sorting)
+ * @access  Private (Admin only)
+ */
+router.get(
+  '/',
+  authMiddleware,
+  roleMiddleware([ROLES.ADMIN]),
+  validationMiddleware.validatePagination,
+  authController.getAllUsers
+);
+
+/**
+ * @route   GET /api/users/:id
+ * @desc    Get user by ID
+ * @access  Private (Admin or same user)
+ */
+router.get(
+  '/:id',
+  authMiddleware,
+  validationMiddleware.validateObjectId('id'),
+  authController.getUserById
+);
+
+/**
+ * @route   POST /api/users
+ * @desc    Create a new user (admin function)
+ * @access  Private (Admin only)
+ */
+router.post(
+  '/',
+  authMiddleware,
+  roleMiddleware([ROLES.ADMIN]),
+  validationMiddleware.validateUserCreation,
+  authController.createUser
+);
+
+/**
+ * @route   PUT /api/users/:id
+ * @desc    Update user by ID
+ * @access  Private (Admin or same user)
+ */
+router.put(
+  '/:id',
+  authMiddleware,
+  validationMiddleware.validateObjectId('id'),
+  validationMiddleware.validateUserUpdate,
+  authController.updateUser
+);
+
+/**
+ * @route   DELETE /api/users/:id
+ * @desc    Delete user by ID
+ * @access  Private (Admin only)
+ */
+router.delete(
+  '/:id',
+  authMiddleware,
+  roleMiddleware([ROLES.ADMIN]),
+  validationMiddleware.validateObjectId('id'),
+  authController.deleteUser
+);
+
+/**
+ * @route   PATCH /api/users/:id/role
+ * @desc    Update user role
+ * @access  Private (Admin only)
+ */
+router.patch(
+  '/:id/role',
+  authMiddleware,
+  roleMiddleware([ROLES.ADMIN]),
+  validationMiddleware.validateObjectId('id'),
+  validationMiddleware.validateRoleUpdate,
+  authController.updateUserRole
+);
+
+/**
+ * @route   PATCH /api/users/:id/status
+ * @desc    Activate or deactivate user
+ * @access  Private (Admin only)
+ */
+router.patch(
+  '/:id/status',
+  authMiddleware,
+  roleMiddleware([ROLES.ADMIN]),
+  validationMiddleware.validateObjectId('id'),
+  validationMiddleware.validateStatusUpdate,
+  authController.updateUserStatus
+);
+
+/**
+ * @route   GET /api/users/:id/incidents
+ * @desc    Get all incidents reported by or assigned to a user
+ * @access  Private (Admin, technician, or same user)
+ */
+router.get(
+  '/:id/incidents',
+  authMiddleware,
+  validationMiddleware.validateObjectId('id'),
+  authController.getUserIncidents
+);
+
+/**
+ * @route   GET /api/users/:id/equipment
+ * @desc    Get all equipment assigned to a user
+ * @access  Private (Admin, technician, or same user)
+ */
+router.get(
+  '/:id/equipment',
+  authMiddleware,
+  validationMiddleware.validateObjectId('id'),
+  authController.getUserEquipment
+);
+
+/**
+ * @route   POST /api/users/:id/profile-image
+ * @desc    Upload user profile image
+ * @access  Private (Admin or same user)
+ */
+router.post(
+  '/:id/profile-image',
+  authMiddleware,
+  validationMiddleware.validateObjectId('id'),
+  validationMiddleware.validateImageUpload,
+  authController.uploadProfileImage
+);
+
+/**
+ * @route   DELETE /api/users/:id/profile-image
+ * @desc    Remove user profile image
+ * @access  Private (Admin or same user)
+ */
+router.delete(
+  '/:id/profile-image',
+  authMiddleware,
+  validationMiddleware.validateObjectId('id'),
+  authController.removeProfileImage
+);
+
+/**
+ * @route   GET /api/users/search
+ * @desc    Search users by name, email, department, etc.
+ * @access  Private (Admin, technician)
+ */
+router.get(
+  '/search',
+  authMiddleware,
+  roleMiddleware([ROLES.ADMIN, ROLES.TECHNICIAN]),
+  authController.searchUsers
+);
+
+/**
+ * @route   GET /api/users/technicians
+ * @desc    Get all technicians (for incident assignment)
+ * @access  Private (Admin, technician)
+ */
+router.get(
+  '/technicians',
+  authMiddleware,
+  roleMiddleware([ROLES.ADMIN, ROLES.TECHNICIAN]),
+  authController.getTechnicians
+);
+
+/**
+ * @route   GET /api/users/departments
+ * @desc    Get list of all departments
+ * @access  Private (Admin)
+ */
+router.get(
+  '/departments',
+  authMiddleware,
+  roleMiddleware([ROLES.ADMIN]),
+  authController.getDepartments
+);
+
+/**
+ * @route   GET /api/users/activity-log/:id
+ * @desc    Get user activity log
+ * @access  Private (Admin or same user)
+ */
+router.get(
+  '/activity-log/:id',
+  authMiddleware,
+  validationMiddleware.validateObjectId('id'),
+  authController.getUserActivityLog
+);
+
+module.exports = router;

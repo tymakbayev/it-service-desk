@@ -1,0 +1,1385 @@
+/**
+ * Report Service
+ * 
+ * This service handles the generation, formatting, and storage of reports in the IT Service Desk application.
+ * It supports multiple report formats (PDF, Excel, CSV) and types (incidents, equipment, users, performance).
+ */
+const fs = require('fs');
+const path = require('path');
+const PDFDocument = require('pdfkit');
+const xlsx = require('xlsx');
+const { createObjectCsvWriter } = require('csv-writer');
+const mongoose = require('mongoose');
+const config = require('../config/config');
+const logger = require('../config/winston');
+const IncidentModel = require('../models/incident.model');
+const EquipmentModel = require('../models/equipment.model');
+const UserModel = require('../models/user.model');
+const ReportModel = require('../models/report.model');
+const { formatDate, calculateDuration } = require('../utils/helpers');
+
+class ReportService {
+  /**
+   * Generate a report based on the provided options
+   * @param {Object} options - Report generation options
+   * @param {string} options.type - Type of report (incidents, equipment, users, performance)
+   * @param {string} options.format - Format of report (pdf, excel, csv)
+   * @param {string} options.title - Title of the report
+   * @param {Object} options.filters - Filters to apply to the data
+   * @param {boolean} options.includeCharts - Whether to include charts in the report
+   * @param {string} options.groupBy - Field to group data by
+   * @param {string} userId - ID of the user generating the report
+   * @returns {Promise<Object>} Report data including URL to the generated file
+   */
+  async generateReport(options, userId) {
+    try {
+      logger.info(`Generating ${options.format} report for ${options.type}`, { userId, reportOptions: options });
+      
+      // Get data based on report type and filters
+      const data = await this.getReportData(options.type, options.filters);
+      
+      // Generate file name
+      const timestamp = new Date().getTime();
+      const fileName = `${options.type}_report_${timestamp}.${options.format}`;
+      const filePath = path.join(config.uploadsDir, 'reports', fileName);
+      
+      // Ensure directory exists
+      const dir = path.dirname(filePath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      
+      // Generate report in the requested format
+      let reportUrl;
+      switch(options.format) {
+        case 'pdf':
+          reportUrl = await this.generatePdfReport(data, options, filePath);
+          break;
+        case 'excel':
+          reportUrl = await this.generateExcelReport(data, options, filePath);
+          break;
+        case 'csv':
+          reportUrl = await this.generateCsvReport(data, options, filePath);
+          break;
+        default:
+          throw new Error(`Unsupported report format: ${options.format}`);
+      }
+      
+      // Save report metadata to database
+      const report = new ReportModel({
+        title: options.title,
+        type: options.type,
+        format: options.format,
+        filePath: filePath,
+        fileUrl: reportUrl,
+        generatedBy: userId,
+        filters: options.filters,
+        size: fs.statSync(filePath).size
+      });
+      
+      await report.save();
+      
+      return {
+        reportUrl,
+        reportOptions: options,
+        reportId: report._id
+      };
+    } catch (error) {
+      logger.error('Error generating report', { error: error.message, stack: error.stack, options });
+      throw error;
+    }
+  }
+  
+  /**
+   * Get data for the report based on type and filters
+   * @param {string} type - Type of report
+   * @param {Object} filters - Filters to apply
+   * @returns {Promise<Array>} Data for the report
+   */
+  async getReportData(type, filters) {
+    switch(type) {
+      case 'incidents':
+        return this.getIncidentsData(filters);
+      case 'equipment':
+        return this.getEquipmentData(filters);
+      case 'users':
+        return this.getUsersData(filters);
+      case 'performance':
+        return this.getPerformanceData(filters);
+      default:
+        throw new Error(`Unsupported report type: ${type}`);
+    }
+  }
+  
+  /**
+   * Get incidents data for report
+   * @param {Object} filters - Filters to apply
+   * @returns {Promise<Array>} Incidents data
+   */
+  async getIncidentsData(filters) {
+    const query = {};
+    
+    // Apply date filters
+    if (filters.startDate && filters.endDate) {
+      query.createdAt = {
+        $gte: new Date(filters.startDate),
+        $lte: new Date(filters.endDate)
+      };
+    }
+    
+    // Apply status filter
+    if (filters.status && filters.status.length > 0) {
+      query.status = { $in: filters.status };
+    }
+    
+    // Apply priority filter
+    if (filters.priority && filters.priority.length > 0) {
+      query.priority = { $in: filters.priority };
+    }
+    
+    // Apply assignee filter
+    if (filters.assignedTo && filters.assignedTo.length > 0) {
+      query.assignedTo = { $in: filters.assignedTo.map(id => mongoose.Types.ObjectId(id)) };
+    }
+    
+    // Apply department filter
+    if (filters.department && filters.department.length > 0) {
+      const users = await UserModel.find({ department: { $in: filters.department } }).select('_id');
+      const userIds = users.map(user => user._id);
+      query.reportedBy = { $in: userIds };
+    }
+    
+    // Get incidents with populated references
+    const incidents = await IncidentModel.find(query)
+      .populate('assignedTo', 'name email department')
+      .populate('reportedBy', 'name email department')
+      .populate('relatedEquipment', 'name type serialNumber status')
+      .sort({ createdAt: -1 });
+    
+    // Calculate additional metrics
+    const enhancedIncidents = incidents.map(incident => {
+      const plainIncident = incident.toObject();
+      
+      // Calculate resolution time if resolved
+      if (plainIncident.status === 'resolved' && plainIncident.resolvedAt) {
+        plainIncident.resolutionTimeHours = calculateDuration(
+          new Date(plainIncident.createdAt),
+          new Date(plainIncident.resolvedAt),
+          'hours'
+        );
+      }
+      
+      // Format dates for display
+      plainIncident.createdAtFormatted = formatDate(plainIncident.createdAt);
+      if (plainIncident.resolvedAt) {
+        plainIncident.resolvedAtFormatted = formatDate(plainIncident.resolvedAt);
+      }
+      
+      return plainIncident;
+    });
+    
+    return enhancedIncidents;
+  }
+  
+  /**
+   * Get equipment data for report
+   * @param {Object} filters - Filters to apply
+   * @returns {Promise<Array>} Equipment data
+   */
+  async getEquipmentData(filters) {
+    const query = {};
+    
+    // Apply type filter
+    if (filters.equipmentType && filters.equipmentType.length > 0) {
+      query.type = { $in: filters.equipmentType };
+    }
+    
+    // Apply status filter
+    if (filters.status && filters.status.length > 0) {
+      query.status = { $in: filters.status };
+    }
+    
+    // Apply location filter
+    if (filters.location && filters.location.length > 0) {
+      query.location = { $in: filters.location };
+    }
+    
+    // Apply purchase date filter
+    if (filters.startDate && filters.endDate) {
+      query.purchaseDate = {
+        $gte: new Date(filters.startDate),
+        $lte: new Date(filters.endDate)
+      };
+    }
+    
+    // Get equipment with populated references
+    const equipment = await EquipmentModel.find(query)
+      .populate('assignedTo', 'name email department')
+      .populate('lastModifiedBy', 'name email')
+      .sort({ createdAt: -1 });
+    
+    // Enhance equipment data
+    const enhancedEquipment = equipment.map(item => {
+      const plainItem = item.toObject();
+      
+      // Format dates for display
+      plainItem.purchaseDateFormatted = formatDate(plainItem.purchaseDate);
+      plainItem.createdAtFormatted = formatDate(plainItem.createdAt);
+      plainItem.lastModifiedAtFormatted = formatDate(plainItem.updatedAt);
+      
+      // Calculate age in years
+      if (plainItem.purchaseDate) {
+        const ageInMs = Date.now() - new Date(plainItem.purchaseDate).getTime();
+        plainItem.ageYears = (ageInMs / (1000 * 60 * 60 * 24 * 365.25)).toFixed(1);
+      }
+      
+      return plainItem;
+    });
+    
+    return enhancedEquipment;
+  }
+  
+  /**
+   * Get users data for report
+   * @param {Object} filters - Filters to apply
+   * @returns {Promise<Array>} Users data
+   */
+  async getUsersData(filters) {
+    const query = { active: true };
+    
+    // Apply role filter
+    if (filters.role && filters.role.length > 0) {
+      query.role = { $in: filters.role };
+    }
+    
+    // Apply department filter
+    if (filters.department && filters.department.length > 0) {
+      query.department = { $in: filters.department };
+    }
+    
+    // Get users with populated role
+    const users = await UserModel.find(query)
+      .populate('role', 'name permissions')
+      .select('-password -refreshToken')
+      .sort({ name: 1 });
+    
+    // Enhance user data
+    const enhancedUsers = users.map(user => {
+      const plainUser = user.toObject();
+      
+      // Format dates
+      plainUser.createdAtFormatted = formatDate(plainUser.createdAt);
+      plainUser.lastLoginFormatted = user.lastLogin ? formatDate(user.lastLogin) : 'Never';
+      
+      return plainUser;
+    });
+    
+    return enhancedUsers;
+  }
+  
+  /**
+   * Get performance data for report
+   * @param {Object} filters - Filters to apply
+   * @returns {Promise<Object>} Performance metrics
+   */
+  async getPerformanceData(filters) {
+    // Define date range
+    const startDate = filters.startDate ? new Date(filters.startDate) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const endDate = filters.endDate ? new Date(filters.endDate) : new Date();
+    
+    // Get all incidents in the date range
+    const incidents = await IncidentModel.find({
+      createdAt: { $gte: startDate, $lte: endDate }
+    }).populate('assignedTo', 'name email department');
+    
+    // Calculate metrics
+    const totalIncidents = incidents.length;
+    const resolvedIncidents = incidents.filter(inc => inc.status === 'resolved').length;
+    const pendingIncidents = incidents.filter(inc => inc.status === 'pending').length;
+    const inProgressIncidents = incidents.filter(inc => inc.status === 'in-progress').length;
+    
+    // Calculate average resolution time
+    let totalResolutionTime = 0;
+    let resolvedCount = 0;
+    
+    incidents.forEach(incident => {
+      if (incident.status === 'resolved' && incident.resolvedAt) {
+        const resolutionTime = new Date(incident.resolvedAt) - new Date(incident.createdAt);
+        totalResolutionTime += resolutionTime;
+        resolvedCount++;
+      }
+    });
+    
+    const avgResolutionTimeMs = resolvedCount > 0 ? totalResolutionTime / resolvedCount : 0;
+    const avgResolutionTimeHours = avgResolutionTimeMs / (1000 * 60 * 60);
+    
+    // Calculate resolution rate
+    const resolutionRate = totalIncidents > 0 ? (resolvedIncidents / totalIncidents) * 100 : 0;
+    
+    // Calculate metrics by priority
+    const priorityMetrics = {
+      high: { total: 0, resolved: 0, avgResolutionTime: 0 },
+      medium: { total: 0, resolved: 0, avgResolutionTime: 0 },
+      low: { total: 0, resolved: 0, avgResolutionTime: 0 }
+    };
+    
+    incidents.forEach(incident => {
+      const priority = incident.priority.toLowerCase();
+      if (priorityMetrics[priority]) {
+        priorityMetrics[priority].total++;
+        
+        if (incident.status === 'resolved' && incident.resolvedAt) {
+          priorityMetrics[priority].resolved++;
+          const resolutionTime = new Date(incident.resolvedAt) - new Date(incident.createdAt);
+          priorityMetrics[priority].avgResolutionTime += resolutionTime;
+        }
+      }
+    });
+    
+    // Calculate average resolution time by priority
+    Object.keys(priorityMetrics).forEach(priority => {
+      if (priorityMetrics[priority].resolved > 0) {
+        priorityMetrics[priority].avgResolutionTime = 
+          (priorityMetrics[priority].avgResolutionTime / priorityMetrics[priority].resolved) / (1000 * 60 * 60);
+      }
+    });
+    
+    // Calculate metrics by technician
+    const technicianMetrics = {};
+    
+    incidents.forEach(incident => {
+      if (incident.assignedTo) {
+        const techId = incident.assignedTo._id.toString();
+        const techName = incident.assignedTo.name;
+        
+        if (!technicianMetrics[techId]) {
+          technicianMetrics[techId] = {
+            name: techName,
+            total: 0,
+            resolved: 0,
+            avgResolutionTime: 0,
+            totalResolutionTime: 0
+          };
+        }
+        
+        technicianMetrics[techId].total++;
+        
+        if (incident.status === 'resolved' && incident.resolvedAt) {
+          technicianMetrics[techId].resolved++;
+          const resolutionTime = new Date(incident.resolvedAt) - new Date(incident.createdAt);
+          technicianMetrics[techId].totalResolutionTime += resolutionTime;
+        }
+      }
+    });
+    
+    // Calculate average resolution time by technician
+    Object.keys(technicianMetrics).forEach(techId => {
+      if (technicianMetrics[techId].resolved > 0) {
+        technicianMetrics[techId].avgResolutionTime = 
+          (technicianMetrics[techId].totalResolutionTime / technicianMetrics[techId].resolved) / (1000 * 60 * 60);
+      }
+      
+      // Remove the total resolution time from the final output
+      delete technicianMetrics[techId].totalResolutionTime;
+    });
+    
+    // Return performance data
+    return {
+      period: {
+        startDate: formatDate(startDate),
+        endDate: formatDate(endDate),
+        durationDays: Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24))
+      },
+      overall: {
+        totalIncidents,
+        resolvedIncidents,
+        pendingIncidents,
+        inProgressIncidents,
+        avgResolutionTimeHours: avgResolutionTimeHours.toFixed(2),
+        resolutionRate: resolutionRate.toFixed(2)
+      },
+      byPriority: priorityMetrics,
+      byTechnician: technicianMetrics
+    };
+  }
+  
+  /**
+   * Generate a PDF report
+   * @param {Array|Object} data - Report data
+   * @param {Object} options - Report options
+   * @param {string} filePath - Path to save the file
+   * @returns {Promise<string>} URL to the generated file
+   */
+  async generatePdfReport(data, options, filePath) {
+    return new Promise((resolve, reject) => {
+      try {
+        const doc = new PDFDocument({ margin: 50 });
+        const stream = fs.createWriteStream(filePath);
+        
+        // Handle stream events
+        stream.on('error', reject);
+        stream.on('finish', () => {
+          const fileUrl = `${config.baseUrl}/uploads/reports/${path.basename(filePath)}`;
+          resolve(fileUrl);
+        });
+        
+        // Pipe the PDF document to the file
+        doc.pipe(stream);
+        
+        // Add title
+        doc.fontSize(20).text(options.title, { align: 'center' });
+        doc.moveDown();
+        
+        // Add report metadata
+        doc.fontSize(12).text(`Report Type: ${options.type}`, { align: 'left' });
+        doc.fontSize(12).text(`Generated: ${formatDate(new Date())}`, { align: 'left' });
+        
+        // Add filters information
+        doc.moveDown();
+        doc.fontSize(14).text('Filters Applied:', { align: 'left' });
+        
+        if (options.filters) {
+          Object.entries(options.filters).forEach(([key, value]) => {
+            if (value && (typeof value !== 'object' || Object.keys(value).length > 0)) {
+              const displayValue = Array.isArray(value) ? value.join(', ') : value;
+              doc.fontSize(12).text(`${key}: ${displayValue}`, { align: 'left' });
+            }
+          });
+        }
+        
+        doc.moveDown();
+        
+        // Add content based on report type
+        switch (options.type) {
+          case 'incidents':
+            this.addIncidentsToPdf(doc, data);
+            break;
+          case 'equipment':
+            this.addEquipmentToPdf(doc, data);
+            break;
+          case 'users':
+            this.addUsersToPdf(doc, data);
+            break;
+          case 'performance':
+            this.addPerformanceToPdf(doc, data);
+            break;
+        }
+        
+        // Finalize the PDF and end the stream
+        doc.end();
+      } catch (error) {
+        reject(error);
+      }
+    });
+  }
+  
+  /**
+   * Add incidents data to PDF document
+   * @param {PDFDocument} doc - PDF document
+   * @param {Array} incidents - Incidents data
+   */
+  addIncidentsToPdf(doc, incidents) {
+    // Add summary
+    doc.fontSize(16).text('Incidents Summary', { align: 'left' });
+    doc.moveDown();
+    doc.fontSize(12).text(`Total Incidents: ${incidents.length}`, { align: 'left' });
+    
+    // Count by status
+    const statusCounts = {};
+    incidents.forEach(incident => {
+      statusCounts[incident.status] = (statusCounts[incident.status] || 0) + 1;
+    });
+    
+    Object.entries(statusCounts).forEach(([status, count]) => {
+      doc.fontSize(12).text(`${status}: ${count}`, { align: 'left' });
+    });
+    
+    doc.moveDown();
+    
+    // Add incidents table
+    doc.fontSize(16).text('Incidents List', { align: 'left' });
+    doc.moveDown();
+    
+    // Define table columns
+    const columns = [
+      { header: 'ID', width: 60 },
+      { header: 'Title', width: 150 },
+      { header: 'Status', width: 80 },
+      { header: 'Priority', width: 80 },
+      { header: 'Created', width: 90 }
+    ];
+    
+    // Draw table header
+    let y = doc.y;
+    let x = 50;
+    
+    columns.forEach(column => {
+      doc.fontSize(10).text(column.header, x, y, { width: column.width, align: 'left' });
+      x += column.width;
+    });
+    
+    doc.moveDown();
+    y = doc.y;
+    doc.lineWidth(1).moveTo(50, y).lineTo(550, y).stroke();
+    doc.moveDown();
+    
+    // Draw table rows
+    incidents.slice(0, 20).forEach(incident => {
+      y = doc.y;
+      x = 50;
+      
+      // ID column
+      doc.fontSize(9).text(incident._id.toString().substring(0, 8), x, y, { width: columns[0].width });
+      x += columns[0].width;
+      
+      // Title column
+      doc.fontSize(9).text(incident.title, x, y, { width: columns[1].width });
+      x += columns[1].width;
+      
+      // Status column
+      doc.fontSize(9).text(incident.status, x, y, { width: columns[2].width });
+      x += columns[2].width;
+      
+      // Priority column
+      doc.fontSize(9).text(incident.priority, x, y, { width: columns[3].width });
+      x += columns[3].width;
+      
+      // Created column
+      doc.fontSize(9).text(incident.createdAtFormatted, x, y, { width: columns[4].width });
+      
+      doc.moveDown();
+    });
+    
+    // Add note if there are more incidents
+    if (incidents.length > 20) {
+      doc.moveDown();
+      doc.fontSize(10).text(`Note: Showing 20 of ${incidents.length} incidents.`, { align: 'center', italic: true });
+    }
+  }
+  
+  /**
+   * Add equipment data to PDF document
+   * @param {PDFDocument} doc - PDF document
+   * @param {Array} equipment - Equipment data
+   */
+  addEquipmentToPdf(doc, equipment) {
+    // Add summary
+    doc.fontSize(16).text('Equipment Summary', { align: 'left' });
+    doc.moveDown();
+    doc.fontSize(12).text(`Total Equipment: ${equipment.length}`, { align: 'left' });
+    
+    // Count by type
+    const typeCounts = {};
+    equipment.forEach(item => {
+      typeCounts[item.type] = (typeCounts[item.type] || 0) + 1;
+    });
+    
+    Object.entries(typeCounts).forEach(([type, count]) => {
+      doc.fontSize(12).text(`${type}: ${count}`, { align: 'left' });
+    });
+    
+    doc.moveDown();
+    
+    // Add equipment table
+    doc.fontSize(16).text('Equipment List', { align: 'left' });
+    doc.moveDown();
+    
+    // Define table columns
+    const columns = [
+      { header: 'Name', width: 120 },
+      { header: 'Type', width: 80 },
+      { header: 'Serial #', width: 100 },
+      { header: 'Status', width: 80 },
+      { header: 'Location', width: 100 }
+    ];
+    
+    // Draw table header
+    let y = doc.y;
+    let x = 50;
+    
+    columns.forEach(column => {
+      doc.fontSize(10).text(column.header, x, y, { width: column.width, align: 'left' });
+      x += column.width;
+    });
+    
+    doc.moveDown();
+    y = doc.y;
+    doc.lineWidth(1).moveTo(50, y).lineTo(550, y).stroke();
+    doc.moveDown();
+    
+    // Draw table rows
+    equipment.slice(0, 20).forEach(item => {
+      y = doc.y;
+      x = 50;
+      
+      // Name column
+      doc.fontSize(9).text(item.name, x, y, { width: columns[0].width });
+      x += columns[0].width;
+      
+      // Type column
+      doc.fontSize(9).text(item.type, x, y, { width: columns[1].width });
+      x += columns[1].width;
+      
+      // Serial # column
+      doc.fontSize(9).text(item.serialNumber || 'N/A', x, y, { width: columns[2].width });
+      x += columns[2].width;
+      
+      // Status column
+      doc.fontSize(9).text(item.status, x, y, { width: columns[3].width });
+      x += columns[3].width;
+      
+      // Location column
+      doc.fontSize(9).text(item.location || 'N/A', x, y, { width: columns[4].width });
+      
+      doc.moveDown();
+    });
+    
+    // Add note if there are more equipment items
+    if (equipment.length > 20) {
+      doc.moveDown();
+      doc.fontSize(10).text(`Note: Showing 20 of ${equipment.length} equipment items.`, { align: 'center', italic: true });
+    }
+  }
+  
+  /**
+   * Add users data to PDF document
+   * @param {PDFDocument} doc - PDF document
+   * @param {Array} users - Users data
+   */
+  addUsersToPdf(doc, users) {
+    // Add summary
+    doc.fontSize(16).text('Users Summary', { align: 'left' });
+    doc.moveDown();
+    doc.fontSize(12).text(`Total Users: ${users.length}`, { align: 'left' });
+    
+    // Count by role
+    const roleCounts = {};
+    users.forEach(user => {
+      const roleName = user.role ? user.role.name : 'No Role';
+      roleCounts[roleName] = (roleCounts[roleName] || 0) + 1;
+    });
+    
+    Object.entries(roleCounts).forEach(([role, count]) => {
+      doc.fontSize(12).text(`${role}: ${count}`, { align: 'left' });
+    });
+    
+    doc.moveDown();
+    
+    // Add users table
+    doc.fontSize(16).text('Users List', { align: 'left' });
+    doc.moveDown();
+    
+    // Define table columns
+    const columns = [
+      { header: 'Name', width: 120 },
+      { header: 'Email', width: 150 },
+      { header: 'Role', width: 100 },
+      { header: 'Department', width: 100 }
+    ];
+    
+    // Draw table header
+    let y = doc.y;
+    let x = 50;
+    
+    columns.forEach(column => {
+      doc.fontSize(10).text(column.header, x, y, { width: column.width, align: 'left' });
+      x += column.width;
+    });
+    
+    doc.moveDown();
+    y = doc.y;
+    doc.lineWidth(1).moveTo(50, y).lineTo(550, y).stroke();
+    doc.moveDown();
+    
+    // Draw table rows
+    users.forEach(user => {
+      y = doc.y;
+      x = 50;
+      
+      // Name column
+      doc.fontSize(9).text(user.name, x, y, { width: columns[0].width });
+      x += columns[0].width;
+      
+      // Email column
+      doc.fontSize(9).text(user.email, x, y, { width: columns[1].width });
+      x += columns[1].width;
+      
+      // Role column
+      doc.fontSize(9).text(user.role ? user.role.name : 'N/A', x, y, { width: columns[2].width });
+      x += columns[2].width;
+      
+      // Department column
+      doc.fontSize(9).text(user.department || 'N/A', x, y, { width: columns[3].width });
+      
+      doc.moveDown();
+    });
+  }
+  
+  /**
+   * Add performance data to PDF document
+   * @param {PDFDocument} doc - PDF document
+   * @param {Object} data - Performance data
+   */
+  addPerformanceToPdf(doc, data) {
+    // Add period information
+    doc.fontSize(16).text('Performance Report', { align: 'left' });
+    doc.moveDown();
+    doc.fontSize(12).text(`Period: ${data.period.startDate} to ${data.period.endDate} (${data.period.durationDays} days)`, { align: 'left' });
+    doc.moveDown();
+    
+    // Add overall metrics
+    doc.fontSize(14).text('Overall Metrics', { align: 'left' });
+    doc.moveDown();
+    
+    doc.fontSize(12).text(`Total Incidents: ${data.overall.totalIncidents}`, { align: 'left' });
+    doc.fontSize(12).text(`Resolved Incidents: ${data.overall.resolvedIncidents}`, { align: 'left' });
+    doc.fontSize(12).text(`Pending Incidents: ${data.overall.pendingIncidents}`, { align: 'left' });
+    doc.fontSize(12).text(`In Progress Incidents: ${data.overall.inProgressIncidents}`, { align: 'left' });
+    doc.fontSize(12).text(`Average Resolution Time: ${data.overall.avgResolutionTimeHours} hours`, { align: 'left' });
+    doc.fontSize(12).text(`Resolution Rate: ${data.overall.resolutionRate}%`, { align: 'left' });
+    
+    doc.moveDown();
+    
+    // Add metrics by priority
+    doc.fontSize(14).text('Metrics by Priority', { align: 'left' });
+    doc.moveDown();
+    
+    Object.entries(data.byPriority).forEach(([priority, metrics]) => {
+      doc.fontSize(12).text(`${priority.toUpperCase()}:`, { align: 'left' });
+      doc.fontSize(10).text(`  Total: ${metrics.total}`, { align: 'left' });
+      doc.fontSize(10).text(`  Resolved: ${metrics.resolved}`, { align: 'left' });
+      doc.fontSize(10).text(`  Avg. Resolution Time: ${metrics.avgResolutionTime.toFixed(2)} hours`, { align: 'left' });
+      doc.moveDown(0.5);
+    });
+    
+    doc.moveDown();
+    
+    // Add metrics by technician
+    doc.fontSize(14).text('Metrics by Technician', { align: 'left' });
+    doc.moveDown();
+    
+    Object.entries(data.byTechnician).forEach(([techId, metrics]) => {
+      doc.fontSize(12).text(`${metrics.name}:`, { align: 'left' });
+      doc.fontSize(10).text(`  Total Assigned: ${metrics.total}`, { align: 'left' });
+      doc.fontSize(10).text(`  Resolved: ${metrics.resolved}`, { align: 'left' });
+      doc.fontSize(10).text(`  Avg. Resolution Time: ${metrics.avgResolutionTime.toFixed(2)} hours`, { align: 'left' });
+      doc.moveDown(0.5);
+    });
+  }
+  
+  /**
+   * Generate an Excel report
+   * @param {Array|Object} data - Report data
+   * @param {Object} options - Report options
+   * @param {string} filePath - Path to save the file
+   * @returns {Promise<string>} URL to the generated file
+   */
+  async generateExcelReport(data, options, filePath) {
+    try {
+      // Create workbook
+      const workbook = xlsx.utils.book_new();
+      
+      // Add metadata sheet
+      const metadataWs = xlsx.utils.aoa_to_sheet([
+        ['Report Title', options.title],
+        ['Report Type', options.type],
+        ['Generated Date', formatDate(new Date())],
+        [''],
+        ['Filters Applied']
+      ]);
+      
+      // Add filters to metadata
+      let rowIndex = 6;
+      if (options.filters) {
+        Object.entries(options.filters).forEach(([key, value]) => {
+          if (value && (typeof value !== 'object' || Object.keys(value).length > 0)) {
+            const displayValue = Array.isArray(value) ? value.join(', ') : value;
+            xlsx.utils.sheet_add_aoa(metadataWs, [[key, displayValue]], { origin: { r: rowIndex, c: 0 } });
+            rowIndex++;
+          }
+        });
+      }
+      
+      // Add metadata sheet to workbook
+      xlsx.utils.book_append_sheet(workbook, metadataWs, 'Metadata');
+      
+      // Add data sheets based on report type
+      switch (options.type) {
+        case 'incidents':
+          this.addIncidentsToExcel(workbook, data);
+          break;
+        case 'equipment':
+          this.addEquipmentToExcel(workbook, data);
+          break;
+        case 'users':
+          this.addUsersToExcel(workbook, data);
+          break;
+        case 'performance':
+          this.addPerformanceToExcel(workbook, data);
+          break;
+      }
+      
+      // Write to file
+      xlsx.writeFile(workbook, filePath);
+      
+      // Return file URL
+      const fileUrl = `${config.baseUrl}/uploads/reports/${path.basename(filePath)}`;
+      return fileUrl;
+    } catch (error) {
+      logger.error('Error generating Excel report', { error: error.message, stack: error.stack });
+      throw error;
+    }
+  }
+  
+  /**
+   * Add incidents data to Excel workbook
+   * @param {Workbook} workbook - Excel workbook
+   * @param {Array} incidents - Incidents data
+   */
+  addIncidentsToExcel(workbook, incidents) {
+    // Create summary sheet
+    const summaryData = [
+      ['Incidents Summary'],
+      [''],
+      ['Total Incidents', incidents.length]
+    ];
+    
+    // Count by status
+    const statusCounts = {};
+    incidents.forEach(incident => {
+      statusCounts[incident.status] = (statusCounts[incident.status] || 0) + 1;
+    });
+    
+    let rowIndex = 4;
+    Object.entries(statusCounts).forEach(([status, count]) => {
+      summaryData.push([`${status} Incidents`, count]);
+      rowIndex++;
+    });
+    
+    // Count by priority
+    summaryData.push(['']);
+    rowIndex++;
+    
+    const priorityCounts = {};
+    incidents.forEach(incident => {
+      priorityCounts[incident.priority] = (priorityCounts[incident.priority] || 0) + 1;
+    });
+    
+    Object.entries(priorityCounts).forEach(([priority, count]) => {
+      summaryData.push([`${priority} Priority`, count]);
+      rowIndex++;
+    });
+    
+    // Add summary sheet
+    const summaryWs = xlsx.utils.aoa_to_sheet(summaryData);
+    xlsx.utils.book_append_sheet(workbook, summaryWs, 'Summary');
+    
+    // Create incidents sheet
+    const headers = [
+      'ID', 'Title', 'Description', 'Status', 'Priority', 
+      'Created At', 'Created By', 'Assigned To', 'Related Equipment',
+      'Resolution Time (hours)'
+    ];
+    
+    const incidentsData = incidents.map(incident => [
+      incident._id.toString(),
+      incident.title,
+      incident.description,
+      incident.status,
+      incident.priority,
+      incident.createdAtFormatted,
+      incident.reportedBy ? incident.reportedBy.name : 'N/A',
+      incident.assignedTo ? incident.assignedTo.name : 'N/A',
+      incident.relatedEquipment ? incident.relatedEquipment.name : 'N/A',
+      incident.resolutionTimeHours || 'N/A'
+    ]);
+    
+    // Add headers to incidents data
+    incidentsData.unshift(headers);
+    
+    // Add incidents sheet
+    const incidentsWs = xlsx.utils.aoa_to_sheet(incidentsData);
+    xlsx.utils.book_append_sheet(workbook, incidentsWs, 'Incidents');
+  }
+  
+  /**
+   * Add equipment data to Excel workbook
+   * @param {Workbook} workbook - Excel workbook
+   * @param {Array} equipment - Equipment data
+   */
+  addEquipmentToExcel(workbook, equipment) {
+    // Create summary sheet
+    const summaryData = [
+      ['Equipment Summary'],
+      [''],
+      ['Total Equipment', equipment.length]
+    ];
+    
+    // Count by type
+    const typeCounts = {};
+    equipment.forEach(item => {
+      typeCounts[item.type] = (typeCounts[item.type] || 0) + 1;
+    });
+    
+    let rowIndex = 4;
+    Object.entries(typeCounts).forEach(([type, count]) => {
+      summaryData.push([`${type}`, count]);
+      rowIndex++;
+    });
+    
+    // Count by status
+    summaryData.push(['']);
+    rowIndex++;
+    
+    const statusCounts = {};
+    equipment.forEach(item => {
+      statusCounts[item.status] = (statusCounts[item.status] || 0) + 1;
+    });
+    
+    Object.entries(statusCounts).forEach(([status, count]) => {
+      summaryData.push([`${status} Status`, count]);
+      rowIndex++;
+    });
+    
+    // Add summary sheet
+    const summaryWs = xlsx.utils.aoa_to_sheet(summaryData);
+    xlsx.utils.book_append_sheet(workbook, summaryWs, 'Summary');
+    
+    // Create equipment sheet
+    const headers = [
+      'ID', 'Name', 'Type', 'Serial Number', 'Status', 
+      'Location', 'Purchase Date', 'Assigned To', 'Age (Years)',
+      'Last Modified'
+    ];
+    
+    const equipmentData = equipment.map(item => [
+      item._id.toString(),
+      item.name,
+      item.type,
+      item.serialNumber || 'N/A',
+      item.status,
+      item.location || 'N/A',
+      item.purchaseDateFormatted || 'N/A',
+      item.assignedTo ? item.assignedTo.name : 'N/A',
+      item.ageYears || 'N/A',
+      item.lastModifiedAtFormatted
+    ]);
+    
+    // Add headers to equipment data
+    equipmentData.unshift(headers);
+    
+    // Add equipment sheet
+    const equipmentWs = xlsx.utils.aoa_to_sheet(equipmentData);
+    xlsx.utils.book_append_sheet(workbook, equipmentWs, 'Equipment');
+  }
+  
+  /**
+   * Add users data to Excel workbook
+   * @param {Workbook} workbook - Excel workbook
+   * @param {Array} users - Users data
+   */
+  addUsersToExcel(workbook, users) {
+    // Create summary sheet
+    const summaryData = [
+      ['Users Summary'],
+      [''],
+      ['Total Users', users.length]
+    ];
+    
+    // Count by role
+    const roleCounts = {};
+    users.forEach(user => {
+      const roleName = user.role ? user.role.name : 'No Role';
+      roleCounts[roleName] = (roleCounts[roleName] || 0) + 1;
+    });
+    
+    let rowIndex = 4;
+    Object.entries(roleCounts).forEach(([role, count]) => {
+      summaryData.push([role, count]);
+      rowIndex++;
+    });
+    
+    // Count by department
+    summaryData.push(['']);
+    rowIndex++;
+    
+    const deptCounts = {};
+    users.forEach(user => {
+      const dept = user.department || 'No Department';
+      deptCounts[dept] = (deptCounts[dept] || 0) + 1;
+    });
+    
+    Object.entries(deptCounts).forEach(([dept, count]) => {
+      summaryData.push([dept, count]);
+      rowIndex++;
+    });
+    
+    // Add summary sheet
+    const summaryWs = xlsx.utils.aoa_to_sheet(summaryData);
+    xlsx.utils.book_append_sheet(workbook, summaryWs, 'Summary');
+    
+    // Create users sheet
+    const headers = [
+      'ID', 'Name', 'Email', 'Role', 'Department', 
+      'Created At', 'Last Login', 'Active'
+    ];
+    
+    const usersData = users.map(user => [
+      user._id.toString(),
+      user.name,
+      user.email,
+      user.role ? user.role.name : 'N/A',
+      user.department || 'N/A',
+      user.createdAtFormatted,
+      user.lastLoginFormatted,
+      user.active ? 'Yes' : 'No'
+    ]);
+    
+    // Add headers to users data
+    usersData.unshift(headers);
+    
+    // Add users sheet
+    const usersWs = xlsx.utils.aoa_to_sheet(usersData);
+    xlsx.utils.book_append_sheet(workbook, usersWs, 'Users');
+  }
+  
+  /**
+   * Add performance data to Excel workbook
+   * @param {Workbook} workbook - Excel workbook
+   * @param {Object} data - Performance data
+   */
+  addPerformanceToExcel(workbook, data) {
+    // Create overview sheet
+    const overviewData = [
+      ['Performance Report'],
+      [''],
+      ['Period', `${data.period.startDate} to ${data.period.endDate} (${data.period.durationDays} days)`],
+      [''],
+      ['Overall Metrics'],
+      ['Total Incidents', data.overall.totalIncidents],
+      ['Resolved Incidents', data.overall.resolvedIncidents],
+      ['Pending Incidents', data.overall.pendingIncidents],
+      ['In Progress Incidents', data.overall.inProgressIncidents],
+      ['Average Resolution Time (hours)', data.overall.avgResolutionTimeHours],
+      ['Resolution Rate (%)', data.overall.resolutionRate]
+    ];
+    
+    // Add overview sheet
+    const overviewWs = xlsx.utils.aoa_to_sheet(overviewData);
+    xlsx.utils.book_append_sheet(workbook, overviewWs, 'Overview');
+    
+    // Create priority metrics sheet
+    const priorityHeaders = ['Priority', 'Total Incidents', 'Resolved Incidents', 'Avg. Resolution Time (hours)'];
+    const priorityData = Object.entries(data.byPriority).map(([priority, metrics]) => [
+      priority.toUpperCase(),
+      metrics.total,
+      metrics.resolved,
+      metrics.avgResolutionTime.toFixed(2)
+    ]);
+    
+    // Add headers to priority data
+    priorityData.unshift(priorityHeaders);
+    
+    // Add priority metrics sheet
+    const priorityWs = xlsx.utils.aoa_to_sheet(priorityData);
+    xlsx.utils.book_append_sheet(workbook, priorityWs, 'By Priority');
+    
+    // Create technician metrics sheet
+    const techHeaders = ['Technician', 'Total Assigned', 'Resolved', 'Avg. Resolution Time (hours)'];
+    const techData = Object.entries(data.byTechnician).map(([techId, metrics]) => [
+      metrics.name,
+      metrics.total,
+      metrics.resolved,
+      metrics.avgResolutionTime.toFixed(2)
+    ]);
+    
+    // Add headers to technician data
+    techData.unshift(techHeaders);
+    
+    // Add technician metrics sheet
+    const techWs = xlsx.utils.aoa_to_sheet(techData);
+    xlsx.utils.book_append_sheet(workbook, techWs, 'By Technician');
+  }
+  
+  /**
+   * Generate a CSV report
+   * @param {Array|Object} data - Report data
+   * @param {Object} options - Report options
+   * @param {string} filePath - Path to save the file
+   * @returns {Promise<string>} URL to the generated file
+   */
+  async generateCsvReport(data, options, filePath) {
+    try {
+      let records = [];
+      let headers = {};
+      
+      // Prepare data based on report type
+      switch (options.type) {
+        case 'incidents':
+          headers = {
+            id: 'ID',
+            title: 'Title',
+            description: 'Description',
+            status: 'Status',
+            priority: 'Priority',
+            createdAt: 'Created At',
+            reportedBy: 'Reported By',
+            assignedTo: 'Assigned To',
+            relatedEquipment: 'Related Equipment',
+            resolutionTime: 'Resolution Time (hours)'
+          };
+          
+          records = data.map(incident => ({
+            id: incident._id.toString(),
+            title: incident.title,
+            description: incident.description,
+            status: incident.status,
+            priority: incident.priority,
+            createdAt: incident.createdAtFormatted,
+            reportedBy: incident.reportedBy ? incident.reportedBy.name : 'N/A',
+            assignedTo: incident.assignedTo ? incident.assignedTo.name : 'N/A',
+            relatedEquipment: incident.relatedEquipment ? incident.relatedEquipment.name : 'N/A',
+            resolutionTime: incident.resolutionTimeHours || 'N/A'
+          }));
+          break;
+          
+        case 'equipment':
+          headers = {
+            id: 'ID',
+            name: 'Name',
+            type: 'Type',
+            serialNumber: 'Serial Number',
+            status: 'Status',
+            location: 'Location',
+            purchaseDate: 'Purchase Date',
+            assignedTo: 'Assigned To',
+            age: 'Age (Years)',
+            lastModified: 'Last Modified'
+          };
+          
+          records = data.map(item => ({
+            id: item._id.toString(),
+            name: item.name,
+            type: item.type,
+            serialNumber: item.serialNumber || 'N/A',
+            status: item.status,
+            location: item.location || 'N/A',
+            purchaseDate: item.purchaseDateFormatted || 'N/A',
+            assignedTo: item.assignedTo ? item.assignedTo.name : 'N/A',
+            age: item.ageYears || 'N/A',
+            lastModified: item.lastModifiedAtFormatted
+          }));
+          break;
+          
+        case 'users':
+          headers = {
+            id: 'ID',
+            name: 'Name',
+            email: 'Email',
+            role: 'Role',
+            department: 'Department',
+            createdAt: 'Created At',
+            lastLogin: 'Last Login',
+            active: 'Active'
+          };
+          
+          records = data.map(user => ({
+            id: user._id.toString(),
+            name: user.name,
+            email: user.email,
+            role: user.role ? user.role.name : 'N/A',
+            department: user.department || 'N/A',
+            createdAt: user.createdAtFormatted,
+            lastLogin: user.lastLoginFormatted,
+            active: user.active ? 'Yes' : 'No'
+          }));
+          break;
+          
+        case 'performance':
+          // For performance, we'll create a summary CSV with multiple sections
+          // First, add overall metrics
+          records.push({
+            metric: 'Report Period',
+            value: `${data.period.startDate} to ${data.period.endDate} (${data.period.durationDays} days)`
+          });
+          
+          records.push({ metric: '', value: '' }); // Empty row as separator
+          
+          records.push({ metric: 'Total Incidents', value: data.overall.totalIncidents });
+          records.push({ metric: 'Resolved Incidents', value: data.overall.resolvedIncidents });
+          records.push({ metric: 'Pending Incidents', value: data.overall.pendingIncidents });
+          records.push({ metric: 'In Progress Incidents', value: data.overall.inProgressIncidents });
+          records.push({ metric: 'Average Resolution Time (hours)', value: data.overall.avgResolutionTimeHours });
+          records.push({ metric: 'Resolution Rate (%)', value: data.overall.resolutionRate });
+          
+          records.push({ metric: '', value: '' }); // Empty row as separator
+          records.push({ metric: 'Priority Metrics', value: '' });
+          
+          // Add priority metrics
+          Object.entries(data.byPriority).forEach(([priority, metrics]) => {
+            records.push({ metric: `${priority.toUpperCase()} - Total`, value: metrics.total });
+            records.push({ metric: `${priority.toUpperCase()} - Resolved`, value: metrics.resolved });
+            records.push({ 
+              metric: `${priority.toUpperCase()} - Avg. Resolution Time (hours)`, 
+              value: metrics.avgResolutionTime.toFixed(2) 
+            });
+          });
+          
+          records.push({ metric: '', value: '' }); // Empty row as separator
+          records.push({ metric: 'Technician Metrics', value: '' });
+          
+          // Add technician metrics
+          Object.entries(data.byTechnician).forEach(([techId, metrics]) => {
+            records.push({ metric: `${metrics.name} - Total Assigned`, value: metrics.total });
+            records.push({ metric: `${metrics.name} - Resolved`, value: metrics.resolved });
+            records.push({ 
+              metric: `${metrics.name} - Avg. Resolution Time (hours)`, 
+              value: metrics.avgResolutionTime.toFixed(2) 
+            });
+          });
+          
+          headers = {
+            metric: 'Metric',
+            value: 'Value'
+          };
+          break;
+      }
+      
+      // Create CSV writer
+      const csvWriter = createObjectCsvWriter({
+        path: filePath,
+        header: Object.entries(headers).map(([id, title]) => ({ id, title }))
+      });
+      
+      // Write records to CSV
+      await csvWriter.writeRecords(records);
+      
+      // Return file URL
+      const fileUrl = `${config.baseUrl}/uploads/reports/${path.basename(filePath)}`;
+      return fileUrl;
+    } catch (error) {
+      logger.error('Error generating CSV report', { error: error.message, stack: error.stack });
+      throw error;
+    }
+  }
+  
+  /**
+   * Get a list of reports with pagination
+   * @param {Object} options - Query options
+   * @param {number} options.page - Page number
+   * @param {number} options.limit - Items per page
+   * @param {string} options.type - Filter by report type
+   * @param {string} options.format - Filter by report format
+   * @param {string} options.userId - Filter by user who generated the report
+   * @returns {Promise<Object>} Paginated reports data
+   */
+  async getReports(options) {
+    try {
+      const { page = 1, limit = 10, type, format, userId } = options;
+      
+      // Build query
+      const query = {};
+      
+      if (type) {
+        query.type = type;
+      }
+      
+      if (format) {
+        query.format = format;
+      }
+      
+      if (userId) {
+        query.generatedBy = userId;
+      }
+      
+      // Count total documents
+      const total = await ReportModel.countDocuments(query);
+      
+      // Get reports with pagination
+      const reports = await ReportModel.find(query)
+        .populate('generatedBy', 'name email')
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit);
+      
+      return {
+        reports,
+        pagination: {
+          total,
+          page: parseInt(page),
+          limit: parseInt(limit),
+          pages: Math.ceil(total / limit)
+        }
+      };
+    } catch (error) {
+      logger.error('Error getting reports', { error: error.message, stack: error.stack });
+      throw error;
+    }
+  }
+  
+  /**
+   * Get a report by ID
+   * @param {string} reportId - ID of the report
+   * @returns {Promise<Object>} Report data
+   */
+  async getReportById(reportId) {
+    try {
+      const report = await ReportModel.findById(reportId)
+        .populate('generatedBy', 'name email');
+      
+      if (!report) {
+        throw new Error('Report not found');
+      }
+      
+      return report;
+    } catch (error) {
+      logger.error('Error getting report by ID', { error: error.message, stack: error.stack, reportId });
+      throw error;
+    }
+  }
+  
+  /**
+   * Delete a report
+   * @param {string} reportId - ID of the report to delete
+   * @returns {Promise<boolean>} True if deleted successfully
+   */
+  async deleteReport(reportId) {
+    try {
+      const report = await ReportModel.findById(reportId);
+      
+      if (!report) {
+        throw new Error('Report not found');
+      }
+      
+      // Delete file if it exists
+      if (report.filePath && fs.existsSync(report.filePath)) {
+        fs.unlinkSync(report.filePath);
+      }
+      
+      // Delete report from database
+      await ReportModel.findByIdAndDelete(reportId);
+      
+      return true;
+    } catch (error) {
+      logger.error('Error deleting report', { error: error.message, stack: error.stack, reportId });
+      throw error;
+    }
+  }
+  
+  /**
+   * Schedule a recurring report
+   * @param {Object} options - Report scheduling options
+   * @param {Object} options.reportOptions - Report generation options
+   * @param {string} options.schedule - Cron schedule expression
+   * @param {string} options.recipients - Array of email addresses
+   * @param {string} userId - ID of the user scheduling the report
+   * @returns {Promise<Object>} Scheduled report data
+   */
+  async scheduleReport(options, userId) {
+    // This is a placeholder for future implementation
+    // Would typically use a job scheduler like node-cron or agenda
+    throw new Error('Report scheduling is not implemented yet');
+  }
+}
+
+module.exports = new ReportService();

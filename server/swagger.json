@@ -1,0 +1,3909 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "IT Service Desk API",
+    "description": "API documentation for IT Service Desk application - incident and equipment management system with JWT authentication, notifications, and analytics",
+    "version": "1.0.0",
+    "contact": {
+      "name": "IT Service Desk Support",
+      "email": "support@itservicedesk.example.com"
+    },
+    "license": {
+      "name": "MIT",
+      "url": "https://opensource.org/licenses/MIT"
+    }
+  },
+  "servers": [
+    {
+      "url": "/api",
+      "description": "Development server"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Auth",
+      "description": "Authentication and user management endpoints"
+    },
+    {
+      "name": "Incidents",
+      "description": "Incident management endpoints"
+    },
+    {
+      "name": "Equipment",
+      "description": "Equipment management endpoints"
+    },
+    {
+      "name": "Notifications",
+      "description": "Notification management endpoints"
+    },
+    {
+      "name": "Dashboard",
+      "description": "Dashboard and analytics endpoints"
+    },
+    {
+      "name": "Reports",
+      "description": "Report generation and management endpoints"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    },
+    "schemas": {
+      "User": {
+        "type": "object",
+        "required": ["email", "password", "firstName", "lastName", "role"],
+        "properties": {
+          "_id": {
+            "type": "string",
+            "description": "User ID",
+            "example": "60d21b4667d0d8992e610c85"
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "description": "User email address",
+            "example": "john.doe@example.com"
+          },
+          "firstName": {
+            "type": "string",
+            "description": "User first name",
+            "example": "John"
+          },
+          "lastName": {
+            "type": "string",
+            "description": "User last name",
+            "example": "Doe"
+          },
+          "role": {
+            "type": "string",
+            "enum": ["admin", "technician", "user"],
+            "description": "User role",
+            "example": "user"
+          },
+          "department": {
+            "type": "string",
+            "description": "User department",
+            "example": "IT"
+          },
+          "position": {
+            "type": "string",
+            "description": "User position",
+            "example": "Developer"
+          },
+          "phone": {
+            "type": "string",
+            "description": "User phone number",
+            "example": "+1234567890"
+          },
+          "isActive": {
+            "type": "boolean",
+            "description": "User account status",
+            "example": true
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "User creation date",
+            "example": "2023-03-15T12:00:00Z"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "User last update date",
+            "example": "2023-03-15T12:00:00Z"
+          }
+        }
+      },
+      "UserResponse": {
+        "type": "object",
+        "properties": {
+          "_id": {
+            "type": "string",
+            "description": "User ID",
+            "example": "60d21b4667d0d8992e610c85"
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "description": "User email address",
+            "example": "john.doe@example.com"
+          },
+          "firstName": {
+            "type": "string",
+            "description": "User first name",
+            "example": "John"
+          },
+          "lastName": {
+            "type": "string",
+            "description": "User last name",
+            "example": "Doe"
+          },
+          "role": {
+            "type": "string",
+            "enum": ["admin", "technician", "user"],
+            "description": "User role",
+            "example": "user"
+          },
+          "department": {
+            "type": "string",
+            "description": "User department",
+            "example": "IT"
+          },
+          "position": {
+            "type": "string",
+            "description": "User position",
+            "example": "Developer"
+          },
+          "phone": {
+            "type": "string",
+            "description": "User phone number",
+            "example": "+1234567890"
+          },
+          "isActive": {
+            "type": "boolean",
+            "description": "User account status",
+            "example": true
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "User creation date",
+            "example": "2023-03-15T12:00:00Z"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "User last update date",
+            "example": "2023-03-15T12:00:00Z"
+          }
+        }
+      },
+      "LoginRequest": {
+        "type": "object",
+        "required": ["email", "password"],
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "description": "User email address",
+            "example": "john.doe@example.com"
+          },
+          "password": {
+            "type": "string",
+            "format": "password",
+            "description": "User password",
+            "example": "Password123!"
+          }
+        }
+      },
+      "RegisterRequest": {
+        "type": "object",
+        "required": ["email", "password", "firstName", "lastName"],
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "description": "User email address",
+            "example": "john.doe@example.com"
+          },
+          "password": {
+            "type": "string",
+            "format": "password",
+            "description": "User password",
+            "example": "Password123!"
+          },
+          "firstName": {
+            "type": "string",
+            "description": "User first name",
+            "example": "John"
+          },
+          "lastName": {
+            "type": "string",
+            "description": "User last name",
+            "example": "Doe"
+          },
+          "department": {
+            "type": "string",
+            "description": "User department",
+            "example": "IT"
+          },
+          "position": {
+            "type": "string",
+            "description": "User position",
+            "example": "Developer"
+          },
+          "phone": {
+            "type": "string",
+            "description": "User phone number",
+            "example": "+1234567890"
+          }
+        }
+      },
+      "AuthResponse": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "JWT token",
+            "example": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+          },
+          "user": {
+            "$ref": "#/components/schemas/UserResponse"
+          }
+        }
+      },
+      "ForgotPasswordRequest": {
+        "type": "object",
+        "required": ["email"],
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "description": "User email address",
+            "example": "john.doe@example.com"
+          }
+        }
+      },
+      "ResetPasswordRequest": {
+        "type": "object",
+        "required": ["token", "password"],
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "Reset password token",
+            "example": "a1b2c3d4e5f6..."
+          },
+          "password": {
+            "type": "string",
+            "format": "password",
+            "description": "New password",
+            "example": "NewPassword123!"
+          }
+        }
+      },
+      "Incident": {
+        "type": "object",
+        "required": ["title", "description", "priority", "status", "reportedBy"],
+        "properties": {
+          "_id": {
+            "type": "string",
+            "description": "Incident ID",
+            "example": "60d21b4667d0d8992e610c85"
+          },
+          "title": {
+            "type": "string",
+            "description": "Incident title",
+            "example": "Computer not starting"
+          },
+          "description": {
+            "type": "string",
+            "description": "Incident description",
+            "example": "My computer won't turn on after power outage"
+          },
+          "priority": {
+            "type": "string",
+            "enum": ["low", "medium", "high", "critical"],
+            "description": "Incident priority",
+            "example": "high"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["new", "assigned", "in_progress", "on_hold", "resolved", "closed"],
+            "description": "Incident status",
+            "example": "new"
+          },
+          "category": {
+            "type": "string",
+            "description": "Incident category",
+            "example": "Hardware"
+          },
+          "reportedBy": {
+            "type": "string",
+            "description": "User ID who reported the incident",
+            "example": "60d21b4667d0d8992e610c85"
+          },
+          "assignedTo": {
+            "type": "string",
+            "description": "User ID of technician assigned to the incident",
+            "example": "60d21b4667d0d8992e610c86"
+          },
+          "equipment": {
+            "type": "string",
+            "description": "Equipment ID related to the incident",
+            "example": "60d21b4667d0d8992e610c87"
+          },
+          "comments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string",
+                  "description": "Comment text",
+                  "example": "Checked the power supply, it's damaged"
+                },
+                "user": {
+                  "type": "string",
+                  "description": "User ID who made the comment",
+                  "example": "60d21b4667d0d8992e610c86"
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "Comment creation date",
+                  "example": "2023-03-15T14:30:00Z"
+                }
+              }
+            }
+          },
+          "resolutionNotes": {
+            "type": "string",
+            "description": "Notes on how the incident was resolved",
+            "example": "Replaced power supply unit"
+          },
+          "resolutionDate": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Date when the incident was resolved",
+            "example": "2023-03-16T10:15:00Z"
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "filename": {
+                  "type": "string",
+                  "description": "Attachment filename",
+                  "example": "error_screenshot.png"
+                },
+                "path": {
+                  "type": "string",
+                  "description": "Attachment file path",
+                  "example": "/uploads/incidents/60d21b4667d0d8992e610c85/error_screenshot.png"
+                },
+                "mimetype": {
+                  "type": "string",
+                  "description": "Attachment MIME type",
+                  "example": "image/png"
+                },
+                "size": {
+                  "type": "number",
+                  "description": "Attachment file size in bytes",
+                  "example": 245678
+                },
+                "uploadedBy": {
+                  "type": "string",
+                  "description": "User ID who uploaded the attachment",
+                  "example": "60d21b4667d0d8992e610c85"
+                },
+                "uploadedAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "Attachment upload date",
+                  "example": "2023-03-15T12:30:00Z"
+                }
+              }
+            }
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Incident creation date",
+            "example": "2023-03-15T12:00:00Z"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Incident last update date",
+            "example": "2023-03-16T10:15:00Z"
+          }
+        }
+      },
+      "IncidentResponse": {
+        "type": "object",
+        "properties": {
+          "_id": {
+            "type": "string",
+            "description": "Incident ID",
+            "example": "60d21b4667d0d8992e610c85"
+          },
+          "title": {
+            "type": "string",
+            "description": "Incident title",
+            "example": "Computer not starting"
+          },
+          "description": {
+            "type": "string",
+            "description": "Incident description",
+            "example": "My computer won't turn on after power outage"
+          },
+          "priority": {
+            "type": "string",
+            "enum": ["low", "medium", "high", "critical"],
+            "description": "Incident priority",
+            "example": "high"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["new", "assigned", "in_progress", "on_hold", "resolved", "closed"],
+            "description": "Incident status",
+            "example": "new"
+          },
+          "category": {
+            "type": "string",
+            "description": "Incident category",
+            "example": "Hardware"
+          },
+          "reportedBy": {
+            "$ref": "#/components/schemas/UserResponse"
+          },
+          "assignedTo": {
+            "$ref": "#/components/schemas/UserResponse"
+          },
+          "equipment": {
+            "$ref": "#/components/schemas/EquipmentResponse"
+          },
+          "comments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string",
+                  "description": "Comment text",
+                  "example": "Checked the power supply, it's damaged"
+                },
+                "user": {
+                  "$ref": "#/components/schemas/UserResponse"
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "Comment creation date",
+                  "example": "2023-03-15T14:30:00Z"
+                }
+              }
+            }
+          },
+          "resolutionNotes": {
+            "type": "string",
+            "description": "Notes on how the incident was resolved",
+            "example": "Replaced power supply unit"
+          },
+          "resolutionDate": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Date when the incident was resolved",
+            "example": "2023-03-16T10:15:00Z"
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "filename": {
+                  "type": "string",
+                  "description": "Attachment filename",
+                  "example": "error_screenshot.png"
+                },
+                "path": {
+                  "type": "string",
+                  "description": "Attachment file path",
+                  "example": "/uploads/incidents/60d21b4667d0d8992e610c85/error_screenshot.png"
+                },
+                "mimetype": {
+                  "type": "string",
+                  "description": "Attachment MIME type",
+                  "example": "image/png"
+                },
+                "size": {
+                  "type": "number",
+                  "description": "Attachment file size in bytes",
+                  "example": 245678
+                },
+                "uploadedBy": {
+                  "$ref": "#/components/schemas/UserResponse"
+                },
+                "uploadedAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "Attachment upload date",
+                  "example": "2023-03-15T12:30:00Z"
+                }
+              }
+            }
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Incident creation date",
+            "example": "2023-03-15T12:00:00Z"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Incident last update date",
+            "example": "2023-03-16T10:15:00Z"
+          }
+        }
+      },
+      "IncidentCreateRequest": {
+        "type": "object",
+        "required": ["title", "description", "priority", "category"],
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Incident title",
+            "example": "Computer not starting"
+          },
+          "description": {
+            "type": "string",
+            "description": "Incident description",
+            "example": "My computer won't turn on after power outage"
+          },
+          "priority": {
+            "type": "string",
+            "enum": ["low", "medium", "high", "critical"],
+            "description": "Incident priority",
+            "example": "high"
+          },
+          "category": {
+            "type": "string",
+            "description": "Incident category",
+            "example": "Hardware"
+          },
+          "equipment": {
+            "type": "string",
+            "description": "Equipment ID related to the incident",
+            "example": "60d21b4667d0d8992e610c87"
+          }
+        }
+      },
+      "IncidentUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Incident title",
+            "example": "Computer not starting - Updated"
+          },
+          "description": {
+            "type": "string",
+            "description": "Incident description",
+            "example": "My computer won't turn on after power outage. Tried different outlet."
+          },
+          "priority": {
+            "type": "string",
+            "enum": ["low", "medium", "high", "critical"],
+            "description": "Incident priority",
+            "example": "critical"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["new", "assigned", "in_progress", "on_hold", "resolved", "closed"],
+            "description": "Incident status",
+            "example": "assigned"
+          },
+          "category": {
+            "type": "string",
+            "description": "Incident category",
+            "example": "Hardware"
+          },
+          "assignedTo": {
+            "type": "string",
+            "description": "User ID of technician assigned to the incident",
+            "example": "60d21b4667d0d8992e610c86"
+          },
+          "equipment": {
+            "type": "string",
+            "description": "Equipment ID related to the incident",
+            "example": "60d21b4667d0d8992e610c87"
+          },
+          "resolutionNotes": {
+            "type": "string",
+            "description": "Notes on how the incident was resolved",
+            "example": "Replaced power supply unit"
+          }
+        }
+      },
+      "CommentRequest": {
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "Comment text",
+            "example": "Checked the power supply, it's damaged"
+          }
+        }
+      },
+      "Equipment": {
+        "type": "object",
+        "required": ["name", "type", "status", "serialNumber"],
+        "properties": {
+          "_id": {
+            "type": "string",
+            "description": "Equipment ID",
+            "example": "60d21b4667d0d8992e610c87"
+          },
+          "name": {
+            "type": "string",
+            "description": "Equipment name",
+            "example": "Dell XPS 15"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["laptop", "desktop", "server", "printer", "network", "peripheral", "other"],
+            "description": "Equipment type",
+            "example": "laptop"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["available", "in_use", "under_repair", "reserved", "decommissioned"],
+            "description": "Equipment status",
+            "example": "in_use"
+          },
+          "serialNumber": {
+            "type": "string",
+            "description": "Equipment serial number",
+            "example": "SN123456789"
+          },
+          "model": {
+            "type": "string",
+            "description": "Equipment model",
+            "example": "XPS 15 9570"
+          },
+          "manufacturer": {
+            "type": "string",
+            "description": "Equipment manufacturer",
+            "example": "Dell"
+          },
+          "purchaseDate": {
+            "type": "string",
+            "format": "date",
+            "description": "Equipment purchase date",
+            "example": "2022-01-15"
+          },
+          "warrantyExpiryDate": {
+            "type": "string",
+            "format": "date",
+            "description": "Equipment warranty expiry date",
+            "example": "2025-01-15"
+          },
+          "location": {
+            "type": "string",
+            "description": "Equipment physical location",
+            "example": "Main Office, Floor 2"
+          },
+          "assignedTo": {
+            "type": "string",
+            "description": "User ID to whom the equipment is assigned",
+            "example": "60d21b4667d0d8992e610c85"
+          },
+          "notes": {
+            "type": "string",
+            "description": "Additional notes about the equipment",
+            "example": "Upgraded RAM to 32GB"
+          },
+          "specifications": {
+            "type": "object",
+            "description": "Equipment technical specifications",
+            "example": {
+              "cpu": "Intel Core i7-8750H",
+              "ram": "32GB DDR4",
+              "storage": "1TB SSD",
+              "os": "Windows 11 Pro"
+            }
+          },
+          "maintenanceHistory": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "date": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "Maintenance date",
+                  "example": "2023-02-10T09:00:00Z"
+                },
+                "type": {
+                  "type": "string",
+                  "description": "Maintenance type",
+                  "example": "RAM Upgrade"
+                },
+                "description": {
+                  "type": "string",
+                  "description": "Maintenance description",
+                  "example": "Upgraded RAM from 16GB to 32GB"
+                },
+                "performedBy": {
+                  "type": "string",
+                  "description": "User ID who performed the maintenance",
+                  "example": "60d21b4667d0d8992e610c86"
+                }
+              }
+            }
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "filename": {
+                  "type": "string",
+                  "description": "Attachment filename",
+                  "example": "invoice.pdf"
+                },
+                "path": {
+                  "type": "string",
+                  "description": "Attachment file path",
+                  "example": "/uploads/equipment/60d21b4667d0d8992e610c87/invoice.pdf"
+                },
+                "mimetype": {
+                  "type": "string",
+                  "description": "Attachment MIME type",
+                  "example": "application/pdf"
+                },
+                "size": {
+                  "type": "number",
+                  "description": "Attachment file size in bytes",
+                  "example": 125678
+                },
+                "uploadedBy": {
+                  "type": "string",
+                  "description": "User ID who uploaded the attachment",
+                  "example": "60d21b4667d0d8992e610c85"
+                },
+                "uploadedAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "Attachment upload date",
+                  "example": "2022-01-16T10:30:00Z"
+                }
+              }
+            }
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Equipment creation date",
+            "example": "2022-01-16T10:00:00Z"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Equipment last update date",
+            "example": "2023-02-10T09:30:00Z"
+          }
+        }
+      },
+      "EquipmentResponse": {
+        "type": "object",
+        "properties": {
+          "_id": {
+            "type": "string",
+            "description": "Equipment ID",
+            "example": "60d21b4667d0d8992e610c87"
+          },
+          "name": {
+            "type": "string",
+            "description": "Equipment name",
+            "example": "Dell XPS 15"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["laptop", "desktop", "server", "printer", "network", "peripheral", "other"],
+            "description": "Equipment type",
+            "example": "laptop"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["available", "in_use", "under_repair", "reserved", "decommissioned"],
+            "description": "Equipment status",
+            "example": "in_use"
+          },
+          "serialNumber": {
+            "type": "string",
+            "description": "Equipment serial number",
+            "example": "SN123456789"
+          },
+          "model": {
+            "type": "string",
+            "description": "Equipment model",
+            "example": "XPS 15 9570"
+          },
+          "manufacturer": {
+            "type": "string",
+            "description": "Equipment manufacturer",
+            "example": "Dell"
+          },
+          "purchaseDate": {
+            "type": "string",
+            "format": "date",
+            "description": "Equipment purchase date",
+            "example": "2022-01-15"
+          },
+          "warrantyExpiryDate": {
+            "type": "string",
+            "format": "date",
+            "description": "Equipment warranty expiry date",
+            "example": "2025-01-15"
+          },
+          "location": {
+            "type": "string",
+            "description": "Equipment physical location",
+            "example": "Main Office, Floor 2"
+          },
+          "assignedTo": {
+            "$ref": "#/components/schemas/UserResponse"
+          },
+          "notes": {
+            "type": "string",
+            "description": "Additional notes about the equipment",
+            "example": "Upgraded RAM to 32GB"
+          },
+          "specifications": {
+            "type": "object",
+            "description": "Equipment technical specifications",
+            "example": {
+              "cpu": "Intel Core i7-8750H",
+              "ram": "32GB DDR4",
+              "storage": "1TB SSD",
+              "os": "Windows 11 Pro"
+            }
+          },
+          "maintenanceHistory": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "date": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "Maintenance date",
+                  "example": "2023-02-10T09:00:00Z"
+                },
+                "type": {
+                  "type": "string",
+                  "description": "Maintenance type",
+                  "example": "RAM Upgrade"
+                },
+                "description": {
+                  "type": "string",
+                  "description": "Maintenance description",
+                  "example": "Upgraded RAM from 16GB to 32GB"
+                },
+                "performedBy": {
+                  "$ref": "#/components/schemas/UserResponse"
+                }
+              }
+            }
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "filename": {
+                  "type": "string",
+                  "description": "Attachment filename",
+                  "example": "invoice.pdf"
+                },
+                "path": {
+                  "type": "string",
+                  "description": "Attachment file path",
+                  "example": "/uploads/equipment/60d21b4667d0d8992e610c87/invoice.pdf"
+                },
+                "mimetype": {
+                  "type": "string",
+                  "description": "Attachment MIME type",
+                  "example": "application/pdf"
+                },
+                "size": {
+                  "type": "number",
+                  "description": "Attachment file size in bytes",
+                  "example": 125678
+                },
+                "uploadedBy": {
+                  "$ref": "#/components/schemas/UserResponse"
+                },
+                "uploadedAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "Attachment upload date",
+                  "example": "2022-01-16T10:30:00Z"
+                }
+              }
+            }
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Equipment creation date",
+            "example": "2022-01-16T10:00:00Z"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Equipment last update date",
+            "example": "2023-02-10T09:30:00Z"
+          }
+        }
+      },
+      "EquipmentCreateRequest": {
+        "type": "object",
+        "required": ["name", "type", "status", "serialNumber"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Equipment name",
+            "example": "Dell XPS 15"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["laptop", "desktop", "server", "printer", "network", "peripheral", "other"],
+            "description": "Equipment type",
+            "example": "laptop"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["available", "in_use", "under_repair", "reserved", "decommissioned"],
+            "description": "Equipment status",
+            "example": "available"
+          },
+          "serialNumber": {
+            "type": "string",
+            "description": "Equipment serial number",
+            "example": "SN123456789"
+          },
+          "model": {
+            "type": "string",
+            "description": "Equipment model",
+            "example": "XPS 15 9570"
+          },
+          "manufacturer": {
+            "type": "string",
+            "description": "Equipment manufacturer",
+            "example": "Dell"
+          },
+          "purchaseDate": {
+            "type": "string",
+            "format": "date",
+            "description": "Equipment purchase date",
+            "example": "2022-01-15"
+          },
+          "warrantyExpiryDate": {
+            "type": "string",
+            "format": "date",
+            "description": "Equipment warranty expiry date",
+            "example": "2025-01-15"
+          },
+          "location": {
+            "type": "string",
+            "description": "Equipment physical location",
+            "example": "Main Office, Floor 2"
+          },
+          "assignedTo": {
+            "type": "string",
+            "description": "User ID to whom the equipment is assigned",
+            "example": "60d21b4667d0d8992e610c85"
+          },
+          "notes": {
+            "type": "string",
+            "description": "Additional notes about the equipment",
+            "example": "Upgraded RAM to 32GB"
+          },
+          "specifications": {
+            "type": "object",
+            "description": "Equipment technical specifications",
+            "example": {
+              "cpu": "Intel Core i7-8750H",
+              "ram": "32GB DDR4",
+              "storage": "1TB SSD",
+              "os": "Windows 11 Pro"
+            }
+          }
+        }
+      },
+      "EquipmentUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Equipment name",
+            "example": "Dell XPS 15 - Updated"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["available", "in_use", "under_repair", "reserved", "decommissioned"],
+            "description": "Equipment status",
+            "example": "in_use"
+          },
+          "model": {
+            "type": "string",
+            "description": "Equipment model",
+            "example": "XPS 15 9570"
+          },
+          "location": {
+            "type": "string",
+            "description": "Equipment physical location",
+            "example": "Main Office, Floor 3"
+          },
+          "assignedTo": {
+            "type": "string",
+            "description": "User ID to whom the equipment is assigned",
+            "example": "60d21b4667d0d8992e610c85"
+          },
+          "notes": {
+            "type": "string",
+            "description": "Additional notes about the equipment",
+            "example": "Upgraded RAM to 32GB and replaced battery"
+          },
+          "specifications": {
+            "type": "object",
+            "description": "Equipment technical specifications",
+            "example": {
+              "cpu": "Intel Core i7-8750H",
+              "ram": "32GB DDR4",
+              "storage": "1TB SSD",
+              "os": "Windows 11 Pro"
+            }
+          },
+          "warrantyExpiryDate": {
+            "type": "string",
+            "format": "date",
+            "description": "Equipment warranty expiry date",
+            "example": "2026-01-15"
+          }
+        }
+      },
+      "MaintenanceRequest": {
+        "type": "object",
+        "required": ["type", "description"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "Maintenance type",
+            "example": "RAM Upgrade"
+          },
+          "description": {
+            "type": "string",
+            "description": "Maintenance description",
+            "example": "Upgraded RAM from 16GB to 32GB"
+          },
+          "date": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Maintenance date",
+            "example": "2023-02-10T09:00:00Z"
+          }
+        }
+      },
+      "Notification": {
+        "type": "object",
+        "required": ["title", "message", "type", "recipient"],
+        "properties": {
+          "_id": {
+            "type": "string",
+            "description": "Notification ID",
+            "example": "60d21b4667d0d8992e610c88"
+          },
+          "title": {
+            "type": "string",
+            "description": "Notification title",
+            "example": "New Incident Assigned"
+          },
+          "message": {
+            "type": "string",
+            "description": "Notification message",
+            "example": "You have been assigned to incident #INC-2023-001"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["info", "warning", "error", "success"],
+            "description": "Notification type",
+            "example": "info"
+          },
+          "recipient": {
+            "type": "string",
+            "description": "User ID who should receive the notification",
+            "example": "60d21b4667d0d8992e610c86"
+          },
+          "relatedEntity": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["incident", "equipment", "user", "report"],
+                "description": "Related entity type",
+                "example": "incident"
+              },
+              "id": {
+                "type": "string",
+                "description": "Related entity ID",
+                "example": "60d21b4667d0d8992e610c85"
+              }
+            }
+          },
+          "isRead": {
+            "type": "boolean",
+            "description": "Whether the notification has been read",
+            "example": false
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Notification creation date",
+            "example": "2023-03-15T13:00:00Z"
+          },
+          "readAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Date when the notification was read",
+            "example": null
+          }
+        }
+      },
+      "NotificationResponse": {
+        "type": "object",
+        "properties": {
+          "_id": {
+            "type": "string",
+            "description": "Notification ID",
+            "example": "60d21b4667d0d8992e610c88"
+          },
+          "title": {
+            "type": "string",
+            "description": "Notification title",
+            "example": "New Incident Assigned"
+          },
+          "message": {
+            "type": "string",
+            "description": "Notification message",
+            "example": "You have been assigned to incident #INC-2023-001"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["info", "warning", "error", "success"],
+            "description": "Notification type",
+            "example": "info"
+          },
+          "recipient": {
+            "$ref": "#/components/schemas/UserResponse"
+          },
+          "relatedEntity": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["incident", "equipment", "user", "report"],
+                "description": "Related entity type",
+                "example": "incident"
+              },
+              "id": {
+                "type": "string",
+                "description": "Related entity ID",
+                "example": "60d21b4667d0d8992e610c85"
+              }
+            }
+          },
+          "isRead": {
+            "type": "boolean",
+            "description": "Whether the notification has been read",
+            "example": false
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Notification creation date",
+            "example": "2023-03-15T13:00:00Z"
+          },
+          "readAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Date when the notification was read",
+            "example": null
+          }
+        }
+      },
+      "NotificationCreateRequest": {
+        "type": "object",
+        "required": ["title", "message", "type", "recipient"],
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Notification title",
+            "example": "New Incident Assigned"
+          },
+          "message": {
+            "type": "string",
+            "description": "Notification message",
+            "example": "You have been assigned to incident #INC-2023-001"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["info", "warning", "error", "success"],
+            "description": "Notification type",
+            "example": "info"
+          },
+          "recipient": {
+            "type": "string",
+            "description": "User ID who should receive the notification",
+            "example": "60d21b4667d0d8992e610c86"
+          },
+          "relatedEntity": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["incident", "equipment", "user", "report"],
+                "description": "Related entity type",
+                "example": "incident"
+              },
+              "id": {
+                "type": "string",
+                "description": "Related entity ID",
+                "example": "60d21b4667d0d8992e610c85"
+              }
+            }
+          }
+        }
+      },
+      "Report": {
+        "type": "object",
+        "required": ["name", "type", "createdBy"],
+        "properties": {
+          "_id": {
+            "type": "string",
+            "description": "Report ID",
+            "example": "60d21b4667d0d8992e610c89"
+          },
+          "name": {
+            "type": "string",
+            "description": "Report name",
+            "example": "Monthly Incident Summary - March 2023"
+          },
+          "description": {
+            "type": "string",
+            "description": "Report description",
+            "example": "Summary of all incidents reported and resolved in March 2023"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["incident", "equipment", "performance", "custom"],
+            "description": "Report type",
+            "example": "incident"
+          },
+          "format": {
+            "type": "string",
+            "enum": ["pdf", "excel", "csv"],
+            "description": "Report format",
+            "example": "pdf"
+          },
+          "parameters": {
+            "type": "object",
+            "description": "Report generation parameters",
+            "example": {
+              "startDate": "2023-03-01",
+              "endDate": "2023-03-31",
+              "status": ["resolved", "closed"],
+              "priority": ["high", "critical"]
+            }
+          },
+          "filePath": {
+            "type": "string",
+            "description": "Path to the generated report file",
+            "example": "/reports/60d21b4667d0d8992e610c89/report.pdf"
+          },
+          "createdBy": {
+            "type": "string",
+            "description": "User ID who created the report",
+            "example": "60d21b4667d0d8992e610c85"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Report creation date",
+            "example": "2023-04-01T10:00:00Z"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Report last update date",
+            "example": "2023-04-01T10:00:00Z"
+          }
+        }
+      },
+      "ReportResponse": {
+        "type": "object",
+        "properties": {
+          "_id": {
+            "type": "string",
+            "description": "Report ID",
+            "example": "60d21b4667d0d8992e610c89"
+          },
+          "name": {
+            "type": "string",
+            "description": "Report name",
+            "example": "Monthly Incident Summary - March 2023"
+          },
+          "description": {
+            "type": "string",
+            "description": "Report description",
+            "example": "Summary of all incidents reported and resolved in March 2023"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["incident", "equipment", "performance", "custom"],
+            "description": "Report type",
+            "example": "incident"
+          },
+          "format": {
+            "type": "string",
+            "enum": ["pdf", "excel", "csv"],
+            "description": "Report format",
+            "example": "pdf"
+          },
+          "parameters": {
+            "type": "object",
+            "description": "Report generation parameters",
+            "example": {
+              "startDate": "2023-03-01",
+              "endDate": "2023-03-31",
+              "status": ["resolved", "closed"],
+              "priority": ["high", "critical"]
+            }
+          },
+          "filePath": {
+            "type": "string",
+            "description": "Path to the generated report file",
+            "example": "/reports/60d21b4667d0d8992e610c89/report.pdf"
+          },
+          "createdBy": {
+            "$ref": "#/components/schemas/UserResponse"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Report creation date",
+            "example": "2023-04-01T10:00:00Z"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Report last update date",
+            "example": "2023-04-01T10:00:00Z"
+          }
+        }
+      },
+      "ReportCreateRequest": {
+        "type": "object",
+        "required": ["name", "type", "format", "parameters"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Report name",
+            "example": "Monthly Incident Summary - March 2023"
+          },
+          "description": {
+            "type": "string",
+            "description": "Report description",
+            "example": "Summary of all incidents reported and resolved in March 2023"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["incident", "equipment", "performance", "custom"],
+            "description": "Report type",
+            "example": "incident"
+          },
+          "format": {
+            "type": "string",
+            "enum": ["pdf", "excel", "csv"],
+            "description": "Report format",
+            "example": "pdf"
+          },
+          "parameters": {
+            "type": "object",
+            "description": "Report generation parameters",
+            "example": {
+              "startDate": "2023-03-01",
+              "endDate": "2023-03-31",
+              "status": ["resolved", "closed"],
+              "priority": ["high", "critical"]
+            }
+          }
+        }
+      },
+      "DashboardStats": {
+        "type": "object",
+        "properties": {
+          "incidents": {
+            "type": "object",
+            "properties": {
+              "total": {
+                "type": "number",
+                "description": "Total number of incidents",
+                "example": 125
+              },
+              "open": {
+                "type": "number",
+                "description": "Number of open incidents",
+                "example": 42
+              },
+              "resolved": {
+                "type": "number",
+                "description": "Number of resolved incidents",
+                "example": 83
+              },
+              "byPriority": {
+                "type": "object",
+                "properties": {
+                  "low": {
+                    "type": "number",
+                    "description": "Number of low priority incidents",
+                    "example": 30
+                  },
+                  "medium": {
+                    "type": "number",
+                    "description": "Number of medium priority incidents",
+                    "example": 45
+                  },
+                  "high": {
+                    "type": "number",
+                    "description": "Number of high priority incidents",
+                    "example": 35
+                  },
+                  "critical": {
+                    "type": "number",
+                    "description": "Number of critical priority incidents",
+                    "example": 15
+                  }
+                }
+              },
+              "byStatus": {
+                "type": "object",
+                "properties": {
+                  "new": {
+                    "type": "number",
+                    "description": "Number of new incidents",
+                    "example": 12
+                  },
+                  "assigned": {
+                    "type": "number",
+                    "description": "Number of assigned incidents",
+                    "example": 15
+                  },
+                  "in_progress": {
+                    "type": "number",
+                    "description": "Number of in-progress incidents",
+                    "example": 10
+                  },
+                  "on_hold": {
+                    "type": "number",
+                    "description": "Number of on-hold incidents",
+                    "example": 5
+                  },
+                  "resolved": {
+                    "type": "number",
+                    "description": "Number of resolved incidents",
+                    "example": 45
+                  },
+                  "closed": {
+                    "type": "number",
+                    "description": "Number of closed incidents",
+                    "example": 38
+                  }
+                }
+              },
+              "recentIncidents": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/IncidentResponse"
+                }
+              }
+            }
+          },
+          "equipment": {
+            "type": "object",
+            "properties": {
+              "total": {
+                "type": "number",
+                "description": "Total number of equipment",
+                "example": 250
+              },
+              "byStatus": {
+                "type": "object",
+                "properties": {
+                  "available": {
+                    "type": "number",
+                    "description": "Number of available equipment",
+                    "example": 50
+                  },
+                  "in_use": {
+                    "type": "number",
+                    "description": "Number of in-use equipment",
+                    "example": 180
+                  },
+                  "under_repair": {
+                    "type": "number",
+                    "description": "Number of equipment under repair",
+                    "example": 10
+                  },
+                  "reserved": {
+                    "type": "number",
+                    "description": "Number of reserved equipment",
+                    "example": 5
+                  },
+                  "decommissioned": {
+                    "type": "number",
+                    "description": "Number of decommissioned equipment",
+                    "example": 5
+                  }
+                }
+              },
+              "byType": {
+                "type": "object",
+                "properties": {
+                  "laptop": {
+                    "type": "number",
+                    "description": "Number of laptops",
+                    "example": 120
+                  },
+                  "desktop": {
+                    "type": "number",
+                    "description": "Number of desktops",
+                    "example": 80
+                  },
+                  "server": {
+                    "type": "number",
+                    "description": "Number of servers",
+                    "example": 10
+                  },
+                  "printer": {
+                    "type": "number",
+                    "description": "Number of printers",
+                    "example": 15
+                  },
+                  "network": {
+                    "type": "number",
+                    "description": "Number of network equipment",
+                    "example": 20
+                  },
+                  "peripheral": {
+                    "type": "number",
+                    "description": "Number of peripherals",
+                    "example": 5
+                  }
+                }
+              },
+              "warrantyExpiringCount": {
+                "type": "number",
+                "description": "Number of equipment with warranty expiring in 30 days",
+                "example": 8
+              }
+            }
+          },
+          "performance": {
+            "type": "object",
+            "properties": {
+              "averageResolutionTime": {
+                "type": "number",
+                "description": "Average incident resolution time in hours",
+                "example": 24.5
+              },
+              "responseTimeByPriority": {
+                "type": "object",
+                "properties": {
+                  "low": {
+                    "type": "number",
+                    "description": "Average response time for low priority incidents in hours",
+                    "example": 48.2
+                  },
+                  "medium": {
+                    "type": "number",
+                    "description": "Average response time for medium priority incidents in hours",
+                    "example": 24.1
+                  },
+                  "high": {
+                    "type": "number",
+                    "description": "Average response time for high priority incidents in hours",
+                    "example": 8.3
+                  },
+                  "critical": {
+                    "type": "number",
+                    "description": "Average response time for critical priority incidents in hours",
+                    "example": 1.5
+                  }
+                }
+              },
+              "incidentTrend": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "date": {
+                      "type": "string",
+                      "format": "date",
+                      "description": "Date",
+                      "example": "2023-03-01"
+                    },
+                    "count": {
+                      "type": "number",
+                      "description": "Number of incidents",
+                      "example": 5
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "Error message",
+            "example": "Invalid credentials"
+          },
+          "error": {
+            "type": "string",
+            "description": "Detailed error information (only in development mode)",
+            "example": "Password does not match"
+          },
+          "statusCode": {
+            "type": "number",
+            "description": "HTTP status code",
+            "example": 400
+          }
+        }
+      },
+      "ValidationError": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "Error message",
+            "example": "Validation failed"
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "field": {
+                  "type": "string",
+                  "description": "Field with validation error",
+                  "example": "email"
+                },
+                "message": {
+                  "type": "string",
+                  "description": "Validation error message",
+                  "example": "Email is required"
+                }
+              }
+            }
+          },
+          "statusCode": {
+            "type": "number",
+            "description": "HTTP status code",
+            "example": 400
+          }
+        }
+      },
+      "PaginatedResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "description": "Array of items",
+            "items": {
+              "type": "object"
+            }
+          },
+          "pagination": {
+            "type": "object",
+            "properties": {
+              "total": {
+                "type": "number",
+                "description": "Total number of items",
+                "example": 100
+              },
+              "limit": {
+                "type": "number",
+                "description": "Number of items per page",
+                "example": 10
+              },
+              "page": {
+                "type": "number",
+                "description": "Current page number",
+                "example": 1
+              },
+              "pages": {
+                "type": "number",
+                "description": "Total number of pages",
+                "example": 10
+              },
+              "hasNext": {
+                "type": "boolean",
+                "description": "Whether there is a next page",
+                "example": true
+              },
+              "hasPrev": {
+                "type": "boolean",
+                "description": "Whether there is a previous page",
+                "example": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "responses": {
+      "UnauthorizedError": {
+        "description": "Access token is missing or invalid",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "message": "Unauthorized",
+              "statusCode": 401
+            }
+          }
+        }
+      },
+      "ForbiddenError": {
+        "description": "User does not have permission to access this resource",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "message": "Forbidden",
+              "statusCode": 403
+            }
+          }
+        }
+      },
+      "NotFoundError": {
+        "description": "Resource not found",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "message": "Resource not found",
+              "statusCode": 404
+            }
+          }
+        }
+      },
+      "ValidationError": {
+        "description": "Validation error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "example": {
+              "message": "Validation failed",
+              "errors": [
+                {
+                  "field": "email",
+                  "message": "Email is required"
+                },
+                {
+                  "field": "password",
+                  "message": "Password must be at least 8 characters"
+                }
+              ],
+              "statusCode": 400
+            }
+          }
+        }
+      },
+      "ServerError": {
+        "description": "Internal server error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "message": "Internal Server Error",
+              "statusCode": 500
+            }
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/auth/register": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Register a new user",
+        "description": "Create a new user account",
+        "operationId": "registerUser",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "User registered successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Email already exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "message": "Email already in use",
+                  "statusCode": 409
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Login user",
+        "description": "Authenticate user and get JWT token",
+        "operationId": "loginUser",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Login successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "message": "Invalid email or password",
+                  "statusCode": 400
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/auth/forgot-password": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Forgot password",
+        "description": "Send password reset email",
+        "operationId": "forgotPassword",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ForgotPasswordRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Password reset email sent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "example": "Password reset email sent"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "User not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "message": "User not found",
+                  "statusCode": 404
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/auth/reset-password": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Reset password",
+        "description": "Reset user password using token",
+        "operationId": "resetPassword",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResetPasswordRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Password reset successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "example": "Password reset successful"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or expired token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "message": "Invalid or expired token",
+                  "statusCode": 400
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/auth/me": {
+      "get": {
+        "tags": ["Auth"],
+        "summary": "Get current user",
+        "description": "Get current authenticated user information",
+        "operationId": "getCurrentUser",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current user information",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/incidents": {
+      "get": {
+        "tags": ["Incidents"],
+        "summary": "Get all incidents",
+        "description": "Get a paginated list of incidents with optional filtering",
+        "operationId": "getIncidents",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Page number",
+            "schema": {
+              "type": "integer",
+              "default": 1
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Number of items per page",
+            "schema": {
+              "type": "integer",
+              "default": 10
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Filter by status",
+            "schema": {
+              "type": "string",
+              "enum": ["new", "assigned", "in_progress", "on_hold", "resolved", "closed"]
+            }
+          },
+          {
+            "name": "priority",
+            "in": "query",
+            "description": "Filter by priority",
+            "schema": {
+              "type": "string",
+              "enum": ["low", "medium", "high", "critical"]
+            }
+          },
+          {
+            "name": "category",
+            "in": "query",
+            "description": "Filter by category",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "assignedTo",
+            "in": "query",
+            "description": "Filter by assigned technician ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "reportedBy",
+            "in": "query",
+            "description": "Filter by reporter ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "equipment",
+            "in": "query",
+            "description": "Filter by equipment ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "Search in title and description",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "startDate",
+            "in": "query",
+            "description": "Filter by creation date (start)",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          },
+          {
+            "name": "endDate",
+            "in": "query",
+            "description": "Filter by creation date (end)",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "description": "Sort field",
+            "schema": {
+              "type": "string",
+              "enum": ["createdAt", "updatedAt", "priority", "status"],
+              "default": "createdAt"
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "description": "Sort order",
+            "schema": {
+              "type": "string",
+              "enum": ["asc", "desc"],
+              "default": "desc"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of incidents",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/PaginatedResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/IncidentResponse"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      },
+      "post": {
+        "tags": ["Incidents"],
+        "summary": "Create incident",
+        "description": "Create a new incident",
+        "operationId": "createIncident",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IncidentCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Incident created successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationError"
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/incidents/{id}": {
+      "get": {
+        "tags": ["Incidents"],
+        "summary": "Get incident by ID",
+        "description": "Get detailed information about an incident",
+        "operationId": "getIncidentById",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Incident ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Incident details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      },
+      "put": {
+        "tags": ["Incidents"],
+        "summary": "Update incident",
+        "description": "Update an existing incident",
+        "operationId": "updateIncident",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Incident ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IncidentUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Incident updated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationError"
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenError"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      },
+      "delete": {
+        "tags": ["Incidents"],
+        "summary": "Delete incident",
+        "description": "Delete an incident (admin only)",
+        "operationId": "deleteIncident",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Incident ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Incident deleted successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "example": "Incident deleted successfully"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenError"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/incidents/{id}/comments": {
+      "post": {
+        "tags": ["Incidents"],
+        "summary": "Add comment to incident",
+        "description": "Add a new comment to an incident",
+        "operationId": "addIncidentComment",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Incident ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CommentRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Comment added successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationError"
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/incidents/{id}/attachments": {
+      "post": {
+        "tags": ["Incidents"],
+        "summary": "Upload attachment to incident",
+        "description": "Upload a file attachment to an incident",
+        "operationId": "uploadIncidentAttachment",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Incident ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "File to upload"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Attachment uploaded successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid file",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "message": "Invalid file type or size",
+                  "statusCode": 400
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/equipment": {
+      "get": {
+        "tags": ["Equipment"],
+        "summary": "Get all equipment",
+        "description": "Get a paginated list of equipment with optional filtering",
+        "operationId": "getEquipment",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Page number",
+            "schema": {
+              "type": "integer",
+              "default": 1
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Number of items per page",
+            "schema": {
+              "type": "integer",
+              "default": 10
+            }
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "description": "Filter by equipment type",
+            "schema": {
+              "type": "string",
+              "enum": ["laptop", "desktop", "server", "printer", "network", "peripheral", "other"]
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Filter by equipment status",
+            "schema": {
+              "type": "string",
+              "enum": ["available", "in_use", "under_repair", "reserved", "decommissioned"]
+            }
+          },
+          {
+            "name": "assignedTo",
+            "in": "query",
+            "description": "Filter by assigned user ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "Search in name, model, serial number",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "manufacturer",
+            "in": "query",
+            "description": "Filter by manufacturer",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "location",
+            "in": "query",
+            "description": "Filter by location",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "warrantyExpiring",
+            "in": "query",
+            "description": "Filter by warranty expiring in days",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "description": "Sort field",
+            "schema": {
+              "type": "string",
+              "enum": ["name", "type", "status", "purchaseDate", "warrantyExpiryDate"],
+              "default": "name"
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "description": "Sort order",
+            "schema": {
+              "type": "string",
+              "enum": ["asc", "desc"],
+              "default": "asc"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of equipment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/PaginatedResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/EquipmentResponse"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      },
+      "post": {
+        "tags": ["Equipment"],
+        "summary": "Create equipment",
+        "description": "Create a new equipment item",
+        "operationId": "createEquipment",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EquipmentCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Equipment created successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EquipmentResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationError"
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/equipment/{id}": {
+      "get": {
+        "tags": ["Equipment"],
+        "summary": "Get equipment by ID",
+        "description": "Get detailed information about an equipment item",
+        "operationId": "getEquipmentById",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Equipment ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Equipment details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EquipmentResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      },
+      "put": {
+        "tags": ["Equipment"],
+        "summary": "Update equipment",
+        "description": "Update an existing equipment item",
+        "operationId": "updateEquipment",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Equipment ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EquipmentUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Equipment updated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EquipmentResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationError"
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenError"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      },
+      "delete": {
+        "tags": ["Equipment"],
+        "summary": "Delete equipment",
+        "description": "Delete an equipment item (admin only)",
+        "operationId": "deleteEquipment",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Equipment ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Equipment deleted successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "example": "Equipment deleted successfully"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenError"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/equipment/{id}/maintenance": {
+      "post": {
+        "tags": ["Equipment"],
+        "summary": "Add maintenance record",
+        "description": "Add a maintenance record to equipment",
+        "operationId": "addMaintenanceRecord",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Equipment ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MaintenanceRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Maintenance record added successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EquipmentResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationError"
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenError"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/equipment/{id}/attachments": {
+      "post": {
+        "tags": ["Equipment"],
+        "summary": "Upload attachment to equipment",
+        "description": "Upload a file attachment to equipment",
+        "operationId": "uploadEquipmentAttachment",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Equipment ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "File to upload"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Attachment uploaded successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EquipmentResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid file",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "message": "Invalid file type or size",
+                  "statusCode": 400
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenError"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/notifications": {
+      "get": {
+        "tags": ["Notifications"],
+        "summary": "Get user notifications",
+        "description": "Get a paginated list of notifications for the current user",
+        "operationId": "getUserNotifications",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Page number",
+            "schema": {
+              "type": "integer",
+              "default": 1
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Number of items per page",
+            "schema": {
+              "type": "integer",
+              "default": 10
+            }
+          },
+          {
+            "name": "isRead",
+            "in": "query",
+            "description": "Filter by read status",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "description": "Filter by notification type",
+            "schema": {
+              "type": "string",
+              "enum": ["info", "warning", "error", "success"]
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "description": "Sort field",
+            "schema": {
+              "type": "string",
+              "enum": ["createdAt", "readAt"],
+              "default": "createdAt"
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "description": "Sort order",
+            "schema": {
+              "type": "string",
+              "enum": ["asc", "desc"],
+              "default": "desc"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of notifications",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/PaginatedResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/NotificationResponse"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      },
+      "post": {
+        "tags": ["Notifications"],
+        "summary": "Create notification",
+        "description": "Create a new notification (admin and technician only)",
+        "operationId": "createNotification",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotificationCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Notification created successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationError"
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/notifications/unread-count": {
+      "get": {
+        "tags": ["Notifications"],
+        "summary": "Get unread notification count",
+        "description": "Get the count of unread notifications for the current user",
+        "operationId": "getUnreadNotificationCount",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Unread notification count",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "count": {
+                      "type": "integer",
+                      "example": 5
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/notifications/{id}/mark-as-read": {
+      "patch": {
+        "tags": ["Notifications"],
+        "summary": "Mark notification as read",
+        "description": "Mark a notification as read",
+        "operationId": "markNotificationAsRead",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Notification ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Notification marked as read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenError"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/notifications/mark-all-as-read": {
+      "patch": {
+        "tags": ["Notifications"],
+        "summary": "Mark all notifications as read",
+        "description": "Mark all notifications as read for the current user",
+        "operationId": "markAllNotificationsAsRead",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "All notifications marked as read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "example": "All notifications marked as read"
+                    },
+                    "count": {
+                      "type": "integer",
+                      "example": 5
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/dashboard/stats": {
+      "get": {
+        "tags": ["Dashboard"],
+        "summary": "Get dashboard statistics",
+        "description": "Get statistics for the dashboard",
+        "operationId": "getDashboardStats",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Dashboard statistics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardStats"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/dashboard/incident-trends": {
+      "get": {
+        "tags": ["Dashboard"],
+        "summary": "Get incident trends",
+        "description": "Get incident trends for the dashboard",
+        "operationId": "getIncidentTrends",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "period",
+            "in": "query",
+            "description": "Time period",
+            "schema": {
+              "type": "string",
+              "enum": ["day", "week", "month", "year"],
+              "default": "month"
+            }
+          },
+          {
+            "name": "startDate",
+            "in": "query",
+            "description": "Start date for custom period",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          },
+          {
+            "name": "endDate",
+            "in": "query",
+            "description": "End date for custom period",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Incident trends",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "date": {
+                        "type": "string",
+                        "format": "date",
+                        "example": "2023-03-01"
+                      },
+                      "count": {
+                        "type": "integer",
+                        "example": 5
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/dashboard/performance-metrics": {
+      "get": {
+        "tags": ["Dashboard"],
+        "summary": "Get performance metrics",
+        "description": "Get performance metrics for the dashboard",
+        "operationId": "getPerformanceMetrics",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "period",
+            "in": "query",
+            "description": "Time period",
+            "schema": {
+              "type": "string",
+              "enum": ["day", "week", "month", "year"],
+              "default": "month"
+            }
+          },
+          {
+            "name": "startDate",
+            "in": "query",
+            "description": "Start date for custom period",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          },
+          {
+            "name": "endDate",
+            "in": "query",
+            "description": "End date for custom period",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Performance metrics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "averageResolutionTime": {
+                      "type": "number",
+                      "description": "Average incident resolution time in hours",
+                      "example": 24.5
+                    },
+                    "responseTimeByPriority": {
+                      "type": "object",
+                      "properties": {
+                        "low": {
+                          "type": "number",
+                          "description": "Average response time for low priority incidents in hours",
+                          "example": 48.2
+                        },
+                        "medium": {
+                          "type": "number",
+                          "description": "Average response time for medium priority incidents in hours",
+                          "example": 24.1
+                        },
+                        "high": {
+                          "type": "number",
+                          "description": "Average response time for high priority incidents in hours",
+                          "example": 8.3
+                        },
+                        "critical": {
+                          "type": "number",
+                          "description": "Average response time for critical priority incidents in hours",
+                          "example": 1.5
+                        }
+                      }
+                    },
+                    "resolutionTimeByCategory": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "number"
+                      },
+                      "example": {
+                        "Hardware": 36.2,
+                        "Software": 18.5,
+                        "Network": 12.8
+                      }
+                    },
+                    "slaComplianceRate": {
+                      "type": "number",
+                      "description": "SLA compliance rate in percentage",
+                      "example": 92.5
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/reports": {
+      "get": {
+        "tags": ["Reports"],
+        "summary": "Get all reports",
+        "description": "Get a paginated list of reports",
+        "operationId": "getReports",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Page number",
+            "schema": {
+              "type": "integer",
+              "default": 1
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Number of items per page",
+            "schema": {
+              "type": "integer",
+              "default": 10
+            }
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "description": "Filter by report type",
+            "schema": {
+              "type": "string",
+              "enum": ["incident", "equipment", "performance", "custom"]
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "description": "Filter by report format",
+            "schema": {
+              "type": "string",
+              "enum": ["pdf", "excel", "csv"]
+            }
+          },
+          {
+            "name": "createdBy",
+            "in": "query",
+            "description": "Filter by creator ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "Search in name and description",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "startDate",
+            "in": "query",
+            "description": "Filter by creation date (start)",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          },
+          {
+            "name": "endDate",
+            "in": "query",
+            "description": "Filter by creation date (end)",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "description": "Sort field",
+            "schema": {
+              "type": "string",
+              "enum": ["name", "type", "format", "createdAt"],
+              "default": "createdAt"
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "description": "Sort order",
+            "schema": {
+              "type": "string",
+              "enum": ["asc", "desc"],
+              "default": "desc"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of reports",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/PaginatedResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/ReportResponse"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      },
+      "post": {
+        "tags": ["Reports"],
+        "summary": "Generate report",
+        "description": "Generate a new report",
+        "operationId": "generateReport",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReportCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Report generated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationError"
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/reports/{id}": {
+      "get": {
+        "tags": ["Reports"],
+        "summary": "Get report by ID",
+        "description": "Get detailed information about a report",
+        "operationId": "getReportById",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Report ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Report details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      },
+      "delete": {
+        "tags": ["Reports"],
+        "summary": "Delete report",
+        "description": "Delete a report",
+        "operationId": "deleteReport",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Report ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Report deleted successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "example": "Report deleted successfully"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenError"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/reports/{id}/download": {
+      "get": {
+        "tags": ["Reports"],
+        "summary": "Download report file",
+        "description": "Download the generated report file",
+        "operationId": "downloadReport",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Report ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Report file",
+            "content": {
+              "application/pdf": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "text/csv": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenError"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    }
+  },
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ]
+}

@@ -1,0 +1,635 @@
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const UserModel = require('../models/user.model');
+const RoleModel = require('../models/role.model');
+const jwtService = require('../services/jwt.service');
+const config = require('../config/config');
+const { ValidationError } = require('../utils/helpers');
+const logger = require('../config/winston');
+
+/**
+ * Контроллер для управления аутентификацией и авторизацией пользователей
+ */
+class AuthController {
+  /**
+   * Регистрация нового пользователя
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   * @param {Function} next - Express next middleware function
+   */
+  async register(req, res, next) {
+    try {
+      const { 
+        username, 
+        email, 
+        password, 
+        firstName, 
+        lastName, 
+        role = 'USER', 
+        department, 
+        position 
+      } = req.body;
+
+      // Проверка обязательных полей
+      if (!email || !password || !username) {
+        throw new ValidationError('Email, пароль и имя пользователя обязательны');
+      }
+
+      // Проверка существования пользователя
+      const existingUser = await UserModel.findOne({ 
+        $or: [{ email }, { username }] 
+      });
+
+      if (existingUser) {
+        return res.status(409).json({ 
+          success: false, 
+          message: 'Пользователь с таким email или именем пользователя уже существует' 
+        });
+      }
+
+      // Проверка роли
+      const userRole = await RoleModel.findOne({ name: role });
+      if (!userRole) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Указанная роль не существует' 
+        });
+      }
+
+      // Хеширование пароля
+      const salt = await bcrypt.genSalt(10);
+      const hashedPassword = await bcrypt.hash(password, salt);
+
+      // Создание нового пользователя
+      const newUser = new UserModel({
+        username,
+        email,
+        password: hashedPassword,
+        firstName,
+        lastName,
+        role: userRole._id,
+        department,
+        position
+      });
+
+      await newUser.save();
+
+      // Генерация JWT токена
+      const token = jwtService.generateToken({
+        id: newUser._id,
+        username: newUser.username,
+        email: newUser.email,
+        role: role
+      });
+
+      // Подготовка данных пользователя для ответа (без пароля)
+      const userData = {
+        id: newUser._id,
+        username: newUser.username,
+        email: newUser.email,
+        firstName: newUser.firstName,
+        lastName: newUser.lastName,
+        role: role,
+        department: newUser.department,
+        position: newUser.position,
+        createdAt: newUser.createdAt,
+        updatedAt: newUser.updatedAt
+      };
+
+      logger.info(`Новый пользователь зарегистрирован: ${newUser.email}`);
+
+      res.status(201).json({
+        success: true,
+        message: 'Пользователь успешно зарегистрирован',
+        user: userData,
+        token
+      });
+    } catch (error) {
+      logger.error(`Ошибка при регистрации: ${error.message}`);
+      next(error);
+    }
+  }
+
+  /**
+   * Авторизация пользователя
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   * @param {Function} next - Express next middleware function
+   */
+  async login(req, res, next) {
+    try {
+      const { email, password } = req.body;
+
+      if (!email || !password) {
+        throw new ValidationError('Email и пароль обязательны');
+      }
+
+      // Поиск пользователя по email
+      const user = await UserModel.findOne({ email }).populate('role', 'name');
+
+      if (!user) {
+        return res.status(401).json({ 
+          success: false, 
+          message: 'Неверный email или пароль' 
+        });
+      }
+
+      // Проверка пароля
+      const isPasswordValid = await bcrypt.compare(password, user.password);
+
+      if (!isPasswordValid) {
+        return res.status(401).json({ 
+          success: false, 
+          message: 'Неверный email или пароль' 
+        });
+      }
+
+      // Генерация JWT токена
+      const token = jwtService.generateToken({
+        id: user._id,
+        username: user.username,
+        email: user.email,
+        role: user.role.name
+      });
+
+      // Подготовка данных пользователя для ответа (без пароля)
+      const userData = {
+        id: user._id,
+        username: user.username,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        role: user.role.name,
+        department: user.department,
+        position: user.position,
+        createdAt: user.createdAt,
+        updatedAt: user.updatedAt
+      };
+
+      logger.info(`Пользователь авторизован: ${user.email}`);
+
+      res.status(200).json({
+        success: true,
+        message: 'Авторизация успешна',
+        user: userData,
+        token
+      });
+    } catch (error) {
+      logger.error(`Ошибка при авторизации: ${error.message}`);
+      next(error);
+    }
+  }
+
+  /**
+   * Получение данных текущего пользователя
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   * @param {Function} next - Express next middleware function
+   */
+  async me(req, res, next) {
+    try {
+      const userId = req.user.id;
+
+      const user = await UserModel.findById(userId).populate('role', 'name');
+
+      if (!user) {
+        return res.status(404).json({ 
+          success: false, 
+          message: 'Пользователь не найден' 
+        });
+      }
+
+      // Подготовка данных пользователя для ответа (без пароля)
+      const userData = {
+        id: user._id,
+        username: user.username,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        role: user.role.name,
+        department: user.department,
+        position: user.position,
+        createdAt: user.createdAt,
+        updatedAt: user.updatedAt
+      };
+
+      res.status(200).json({
+        success: true,
+        user: userData
+      });
+    } catch (error) {
+      logger.error(`Ошибка при получении данных пользователя: ${error.message}`);
+      next(error);
+    }
+  }
+
+  /**
+   * Обновление данных пользователя
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   * @param {Function} next - Express next middleware function
+   */
+  async updateProfile(req, res, next) {
+    try {
+      const userId = req.user.id;
+      const { firstName, lastName, department, position } = req.body;
+
+      const updatedUser = await UserModel.findByIdAndUpdate(
+        userId,
+        { 
+          firstName, 
+          lastName, 
+          department, 
+          position 
+        },
+        { new: true }
+      ).populate('role', 'name');
+
+      if (!updatedUser) {
+        return res.status(404).json({ 
+          success: false, 
+          message: 'Пользователь не найден' 
+        });
+      }
+
+      // Подготовка данных пользователя для ответа (без пароля)
+      const userData = {
+        id: updatedUser._id,
+        username: updatedUser.username,
+        email: updatedUser.email,
+        firstName: updatedUser.firstName,
+        lastName: updatedUser.lastName,
+        role: updatedUser.role.name,
+        department: updatedUser.department,
+        position: updatedUser.position,
+        createdAt: updatedUser.createdAt,
+        updatedAt: updatedUser.updatedAt
+      };
+
+      logger.info(`Профиль пользователя обновлен: ${updatedUser.email}`);
+
+      res.status(200).json({
+        success: true,
+        message: 'Профиль успешно обновлен',
+        user: userData
+      });
+    } catch (error) {
+      logger.error(`Ошибка при обновлении профиля: ${error.message}`);
+      next(error);
+    }
+  }
+
+  /**
+   * Изменение пароля пользователя
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   * @param {Function} next - Express next middleware function
+   */
+  async changePassword(req, res, next) {
+    try {
+      const userId = req.user.id;
+      const { currentPassword, newPassword } = req.body;
+
+      if (!currentPassword || !newPassword) {
+        throw new ValidationError('Текущий и новый пароли обязательны');
+      }
+
+      const user = await UserModel.findById(userId);
+
+      if (!user) {
+        return res.status(404).json({ 
+          success: false, 
+          message: 'Пользователь не найден' 
+        });
+      }
+
+      // Проверка текущего пароля
+      const isPasswordValid = await bcrypt.compare(currentPassword, user.password);
+
+      if (!isPasswordValid) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Текущий пароль неверен' 
+        });
+      }
+
+      // Хеширование нового пароля
+      const salt = await bcrypt.genSalt(10);
+      const hashedPassword = await bcrypt.hash(newPassword, salt);
+
+      // Обновление пароля
+      user.password = hashedPassword;
+      await user.save();
+
+      logger.info(`Пароль изменен для пользователя: ${user.email}`);
+
+      res.status(200).json({
+        success: true,
+        message: 'Пароль успешно изменен'
+      });
+    } catch (error) {
+      logger.error(`Ошибка при изменении пароля: ${error.message}`);
+      next(error);
+    }
+  }
+
+  /**
+   * Запрос на сброс пароля
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   * @param {Function} next - Express next middleware function
+   */
+  async forgotPassword(req, res, next) {
+    try {
+      const { email } = req.body;
+
+      if (!email) {
+        throw new ValidationError('Email обязателен');
+      }
+
+      const user = await UserModel.findOne({ email });
+
+      if (!user) {
+        // По соображениям безопасности не сообщаем, что пользователь не найден
+        return res.status(200).json({
+          success: true,
+          message: 'Если указанный email существует, на него отправлена инструкция по сбросу пароля'
+        });
+      }
+
+      // Генерация токена для сброса пароля
+      const resetToken = crypto.randomBytes(32).toString('hex');
+      const resetTokenExpiry = Date.now() + 3600000; // 1 час
+
+      user.resetPasswordToken = resetToken;
+      user.resetPasswordExpires = resetTokenExpiry;
+      await user.save();
+
+      // Здесь должен быть код для отправки email с инструкцией по сбросу пароля
+      // emailService.sendPasswordResetEmail(user.email, resetToken);
+
+      logger.info(`Запрос на сброс пароля для: ${user.email}`);
+
+      res.status(200).json({
+        success: true,
+        message: 'Если указанный email существует, на него отправлена инструкция по сбросу пароля'
+      });
+    } catch (error) {
+      logger.error(`Ошибка при запросе сброса пароля: ${error.message}`);
+      next(error);
+    }
+  }
+
+  /**
+   * Сброс пароля по токену
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   * @param {Function} next - Express next middleware function
+   */
+  async resetPassword(req, res, next) {
+    try {
+      const { token, newPassword } = req.body;
+
+      if (!token || !newPassword) {
+        throw new ValidationError('Токен и новый пароль обязательны');
+      }
+
+      const user = await UserModel.findOne({
+        resetPasswordToken: token,
+        resetPasswordExpires: { $gt: Date.now() }
+      });
+
+      if (!user) {
+        return res.status(400).json({
+          success: false,
+          message: 'Токен для сброса пароля недействителен или истек'
+        });
+      }
+
+      // Хеширование нового пароля
+      const salt = await bcrypt.genSalt(10);
+      const hashedPassword = await bcrypt.hash(newPassword, salt);
+
+      // Обновление пароля и сброс токена
+      user.password = hashedPassword;
+      user.resetPasswordToken = undefined;
+      user.resetPasswordExpires = undefined;
+      await user.save();
+
+      logger.info(`Пароль сброшен для пользователя: ${user.email}`);
+
+      res.status(200).json({
+        success: true,
+        message: 'Пароль успешно сброшен'
+      });
+    } catch (error) {
+      logger.error(`Ошибка при сбросе пароля: ${error.message}`);
+      next(error);
+    }
+  }
+
+  /**
+   * Выход пользователя из системы
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   */
+  async logout(req, res) {
+    // JWT токены хранятся на клиенте, поэтому на сервере просто отправляем успешный ответ
+    // Клиент должен удалить токен из хранилища
+    res.status(200).json({
+      success: true,
+      message: 'Выход выполнен успешно'
+    });
+  }
+
+  /**
+   * Получение списка всех пользователей (только для администраторов)
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   * @param {Function} next - Express next middleware function
+   */
+  async getAllUsers(req, res, next) {
+    try {
+      const users = await UserModel.find()
+        .select('-password')
+        .populate('role', 'name');
+
+      const formattedUsers = users.map(user => ({
+        id: user._id,
+        username: user.username,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        role: user.role.name,
+        department: user.department,
+        position: user.position,
+        createdAt: user.createdAt,
+        updatedAt: user.updatedAt
+      }));
+
+      res.status(200).json({
+        success: true,
+        count: users.length,
+        users: formattedUsers
+      });
+    } catch (error) {
+      logger.error(`Ошибка при получении списка пользователей: ${error.message}`);
+      next(error);
+    }
+  }
+
+  /**
+   * Получение данных пользователя по ID (только для администраторов)
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   * @param {Function} next - Express next middleware function
+   */
+  async getUserById(req, res, next) {
+    try {
+      const userId = req.params.id;
+
+      const user = await UserModel.findById(userId)
+        .select('-password')
+        .populate('role', 'name');
+
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          message: 'Пользователь не найден'
+        });
+      }
+
+      const userData = {
+        id: user._id,
+        username: user.username,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        role: user.role.name,
+        department: user.department,
+        position: user.position,
+        createdAt: user.createdAt,
+        updatedAt: user.updatedAt
+      };
+
+      res.status(200).json({
+        success: true,
+        user: userData
+      });
+    } catch (error) {
+      logger.error(`Ошибка при получении пользователя по ID: ${error.message}`);
+      next(error);
+    }
+  }
+
+  /**
+   * Обновление данных пользователя администратором
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   * @param {Function} next - Express next middleware function
+   */
+  async updateUser(req, res, next) {
+    try {
+      const userId = req.params.id;
+      const { username, email, firstName, lastName, role, department, position } = req.body;
+
+      // Проверка роли
+      let roleId;
+      if (role) {
+        const userRole = await RoleModel.findOne({ name: role });
+        if (!userRole) {
+          return res.status(400).json({
+            success: false,
+            message: 'Указанная роль не существует'
+          });
+        }
+        roleId = userRole._id;
+      }
+
+      const updateData = {
+        username,
+        email,
+        firstName,
+        lastName,
+        role: roleId,
+        department,
+        position
+      };
+
+      // Удаляем undefined поля
+      Object.keys(updateData).forEach(key => 
+        updateData[key] === undefined && delete updateData[key]
+      );
+
+      const updatedUser = await UserModel.findByIdAndUpdate(
+        userId,
+        updateData,
+        { new: true }
+      ).populate('role', 'name');
+
+      if (!updatedUser) {
+        return res.status(404).json({
+          success: false,
+          message: 'Пользователь не найден'
+        });
+      }
+
+      const userData = {
+        id: updatedUser._id,
+        username: updatedUser.username,
+        email: updatedUser.email,
+        firstName: updatedUser.firstName,
+        lastName: updatedUser.lastName,
+        role: updatedUser.role.name,
+        department: updatedUser.department,
+        position: updatedUser.position,
+        createdAt: updatedUser.createdAt,
+        updatedAt: updatedUser.updatedAt
+      };
+
+      logger.info(`Администратор обновил пользователя: ${updatedUser.email}`);
+
+      res.status(200).json({
+        success: true,
+        message: 'Пользователь успешно обновлен',
+        user: userData
+      });
+    } catch (error) {
+      logger.error(`Ошибка при обновлении пользователя: ${error.message}`);
+      next(error);
+    }
+  }
+
+  /**
+   * Удаление пользователя (только для администраторов)
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   * @param {Function} next - Express next middleware function
+   */
+  async deleteUser(req, res, next) {
+    try {
+      const userId = req.params.id;
+
+      const deletedUser = await UserModel.findByIdAndDelete(userId);
+
+      if (!deletedUser) {
+        return res.status(404).json({
+          success: false,
+          message: 'Пользователь не найден'
+        });
+      }
+
+      logger.info(`Администратор удалил пользователя: ${deletedUser.email}`);
+
+      res.status(200).json({
+        success: true,
+        message: 'Пользователь успешно удален'
+      });
+    } catch (error) {
+      logger.error(`Ошибка при удалении пользователя: ${error.message}`);
+      next(error);
+    }
+  }
+}
+
+module.exports = new AuthController();

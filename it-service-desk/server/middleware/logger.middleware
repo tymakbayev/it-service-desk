@@ -1,0 +1,282 @@
+const winston = require('winston');
+const { format, transports } = winston;
+const path = require('path');
+const fs = require('fs');
+const config = require('../config/config');
+const constants = require('../utils/constants');
+
+// Создаем директорию для логов, если она не существует
+const logDir = path.join(process.cwd(), 'logs');
+if (!fs.existsSync(logDir)) {
+  fs.mkdirSync(logDir, { recursive: true });
+}
+
+/**
+ * Настройка форматирования логов
+ */
+const logFormat = format.combine(
+  format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+  format.errors({ stack: true }),
+  format.splat(),
+  format.json(),
+  format.metadata({ fillExcept: ['message', 'level', 'timestamp', 'label'] })
+);
+
+/**
+ * Настройка форматирования консольных логов
+ */
+const consoleFormat = format.combine(
+  format.colorize(),
+  format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+  format.printf(({ timestamp, level, message, metadata }) => {
+    let metaStr = '';
+    if (metadata && Object.keys(metadata).length > 0 && metadata.constructor === Object) {
+      if (metadata.userId) {
+        metaStr += ` [User: ${metadata.userId}]`;
+      }
+      if (metadata.ip) {
+        metaStr += ` [IP: ${metadata.ip}]`;
+      }
+      if (metadata.path) {
+        metaStr += ` [Path: ${metadata.path}]`;
+      }
+      if (metadata.requestId) {
+        metaStr += ` [ReqID: ${metadata.requestId}]`;
+      }
+    }
+    return `[${timestamp}] ${level}:${metaStr} ${message}`;
+  })
+);
+
+/**
+ * Создание логгера Winston
+ */
+const logger = winston.createLogger({
+  level: config.env === 'production' ? 'info' : 'debug',
+  format: logFormat,
+  defaultMeta: { service: 'it-service-desk' },
+  transports: [
+    // Запись всех логов уровня error и ниже в файл error.log
+    new transports.File({
+      filename: path.join(logDir, 'error.log'),
+      level: 'error',
+      maxsize: 10485760, // 10MB
+      maxFiles: 5,
+    }),
+    // Запись всех логов в файл combined.log
+    new transports.File({
+      filename: path.join(logDir, 'combined.log'),
+      maxsize: 10485760, // 10MB
+      maxFiles: 5,
+    }),
+  ],
+  exceptionHandlers: [
+    new transports.File({
+      filename: path.join(logDir, 'exceptions.log'),
+      maxsize: 10485760, // 10MB
+      maxFiles: 5,
+    }),
+  ],
+  rejectionHandlers: [
+    new transports.File({
+      filename: path.join(logDir, 'rejections.log'),
+      maxsize: 10485760, // 10MB
+      maxFiles: 5,
+    }),
+  ],
+});
+
+// Если не в production, также выводим логи в консоль
+if (config.env !== 'production') {
+  logger.add(
+    new transports.Console({
+      format: consoleFormat,
+      level: 'debug',
+    })
+  );
+}
+
+/**
+ * Генерирует уникальный ID для запроса
+ * @returns {string} Уникальный ID
+ */
+const generateRequestId = () => {
+  return Date.now().toString(36) + Math.random().toString(36).substr(2, 5).toUpperCase();
+};
+
+/**
+ * Middleware для логирования HTTP запросов
+ * 
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {Function} next - Express next middleware function
+ */
+const loggerMiddleware = (req, res, next) => {
+  // Генерируем уникальный ID для запроса
+  req.id = generateRequestId();
+  
+  const startTime = new Date();
+  const { method, originalUrl, ip } = req;
+  const userAgent = req.headers['user-agent'] || 'unknown';
+  const userId = req.user ? req.user.id : 'unauthenticated';
+  const contentLength = req.headers['content-length'] || 0;
+  const referrer = req.headers['referer'] || req.headers['referrer'] || '-';
+
+  // Логируем начало запроса
+  logger.info(`${method} ${originalUrl} - Request started`, {
+    method,
+    path: originalUrl,
+    ip,
+    userAgent,
+    userId,
+    contentLength,
+    referrer,
+    requestId: req.id,
+  });
+
+  // Функция для логирования завершения запроса
+  const logRequestCompletion = () => {
+    const responseTime = new Date() - startTime;
+    const statusCode = res.statusCode;
+    const contentLength = res._contentLength || 0;
+    
+    let logLevel;
+    if (statusCode >= 500) {
+      logLevel = 'error';
+    } else if (statusCode >= 400) {
+      logLevel = 'warn';
+    } else {
+      logLevel = 'info';
+    }
+    
+    const logMessage = `${method} ${originalUrl} - ${statusCode} - ${responseTime}ms`;
+    
+    logger[logLevel](logMessage, {
+      method,
+      path: originalUrl,
+      statusCode,
+      responseTime,
+      ip,
+      userAgent,
+      userId,
+      requestId: req.id,
+      contentLength,
+    });
+  };
+
+  // Добавляем обработчики событий для логирования завершения запроса
+  res.on('finish', logRequestCompletion);
+  res.on('close', () => {
+    if (!res.finished) {
+      logger.warn(`${method} ${originalUrl} - Connection closed before response completed`, {
+        method,
+        path: originalUrl,
+        ip,
+        userAgent,
+        userId,
+        requestId: req.id,
+      });
+    }
+  });
+
+  // Добавляем функцию логирования в объект запроса
+  req.logger = {
+    info: (message, meta = {}) => {
+      logger.info(message, { 
+        ...meta, 
+        requestId: req.id, 
+        userId: req.user ? req.user.id : 'unauthenticated',
+        path: originalUrl
+      });
+    },
+    warn: (message, meta = {}) => {
+      logger.warn(message, { 
+        ...meta, 
+        requestId: req.id, 
+        userId: req.user ? req.user.id : 'unauthenticated',
+        path: originalUrl
+      });
+    },
+    error: (message, meta = {}) => {
+      logger.error(message, { 
+        ...meta, 
+        requestId: req.id, 
+        userId: req.user ? req.user.id : 'unauthenticated',
+        path: originalUrl
+      });
+    },
+    debug: (message, meta = {}) => {
+      logger.debug(message, { 
+        ...meta, 
+        requestId: req.id, 
+        userId: req.user ? req.user.id : 'unauthenticated',
+        path: originalUrl
+      });
+    }
+  };
+
+  next();
+};
+
+/**
+ * Функция для логирования ошибок
+ * 
+ * @param {Error} err - Объект ошибки
+ * @param {Object} req - Express request object
+ */
+const logError = (err, req) => {
+  const userId = req && req.user ? req.user.id : 'unauthenticated';
+  const requestId = req && req.id ? req.id : 'no-request-id';
+  const path = req ? req.originalUrl || req.url : 'unknown';
+  const method = req ? req.method : 'unknown';
+  const ip = req ? req.ip : 'unknown';
+
+  logger.error(`${err.name || 'Error'}: ${err.message}`, {
+    error: {
+      name: err.name,
+      message: err.message,
+      stack: err.stack,
+      ...(err.details && { details: err.details })
+    },
+    path,
+    method,
+    ip,
+    userId,
+    requestId
+  });
+};
+
+/**
+ * Функция для логирования действий пользователя
+ * 
+ * @param {string} action - Действие пользователя
+ * @param {Object} req - Express request object
+ * @param {Object} [details={}] - Дополнительные детали
+ */
+const logUserAction = (action, req, details = {}) => {
+  if (!req) return;
+
+  const userId = req.user ? req.user.id : 'unauthenticated';
+  const username = req.user ? req.user.username || req.user.email : 'unknown';
+  const role = req.user ? req.user.role : 'unknown';
+  
+  logger.info(`User Action: ${action}`, {
+    action,
+    userId,
+    username,
+    role,
+    ip: req.ip,
+    path: req.originalUrl,
+    method: req.method,
+    requestId: req.id,
+    ...details
+  });
+};
+
+// Экспортируем логгер и middleware
+module.exports = {
+  logger,
+  loggerMiddleware,
+  logError,
+  logUserAction
+};

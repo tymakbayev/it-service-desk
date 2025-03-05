@@ -1,0 +1,266 @@
+const express = require('express');
+const router = express.Router();
+const equipmentController = require('../controllers/equipment.controller');
+const authMiddleware = require('../middleware/auth.middleware');
+const roleMiddleware = require('../middleware/role.middleware');
+const validationMiddleware = require('../middleware/validation.middleware');
+const { body, param, query } = require('express-validator');
+
+/**
+ * @route   POST /api/equipment
+ * @desc    Create new equipment
+ * @access  Private (Admin, Technician)
+ */
+router.post(
+  '/',
+  [
+    authMiddleware,
+    roleMiddleware(['admin', 'technician']),
+    body('name').notEmpty().withMessage('Name is required'),
+    body('type').notEmpty().withMessage('Type is required'),
+    body('serialNumber').notEmpty().withMessage('Serial number is required'),
+    body('purchaseDate').optional().isDate().withMessage('Purchase date must be a valid date'),
+    body('status').optional().isIn(['available', 'assigned', 'maintenance', 'retired']).withMessage('Invalid status'),
+    body('notes').optional().isString().withMessage('Notes must be a string'),
+    validationMiddleware
+  ],
+  equipmentController.create
+);
+
+/**
+ * @route   GET /api/equipment
+ * @desc    Get all equipment with optional filtering
+ * @access  Private (All authenticated users)
+ */
+router.get(
+  '/',
+  [
+    authMiddleware,
+    query('status').optional().isIn(['available', 'assigned', 'maintenance', 'retired']).withMessage('Invalid status'),
+    query('type').optional().isString().withMessage('Type must be a string'),
+    query('assignedTo').optional().isMongoId().withMessage('Invalid user ID'),
+    query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
+    query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be between 1 and 100'),
+    validationMiddleware
+  ],
+  equipmentController.getAll
+);
+
+/**
+ * @route   GET /api/equipment/:id
+ * @desc    Get equipment by ID
+ * @access  Private (All authenticated users)
+ */
+router.get(
+  '/:id',
+  [
+    authMiddleware,
+    param('id').isMongoId().withMessage('Invalid equipment ID'),
+    validationMiddleware
+  ],
+  equipmentController.getById
+);
+
+/**
+ * @route   PUT /api/equipment/:id
+ * @desc    Update equipment
+ * @access  Private (Admin, Technician)
+ */
+router.put(
+  '/:id',
+  [
+    authMiddleware,
+    roleMiddleware(['admin', 'technician']),
+    param('id').isMongoId().withMessage('Invalid equipment ID'),
+    body('name').optional().notEmpty().withMessage('Name cannot be empty'),
+    body('type').optional().notEmpty().withMessage('Type cannot be empty'),
+    body('serialNumber').optional().notEmpty().withMessage('Serial number cannot be empty'),
+    body('purchaseDate').optional().isDate().withMessage('Purchase date must be a valid date'),
+    body('status').optional().isIn(['available', 'assigned', 'maintenance', 'retired']).withMessage('Invalid status'),
+    body('notes').optional().isString().withMessage('Notes must be a string'),
+    validationMiddleware
+  ],
+  equipmentController.update
+);
+
+/**
+ * @route   DELETE /api/equipment/:id
+ * @desc    Delete equipment
+ * @access  Private (Admin only)
+ */
+router.delete(
+  '/:id',
+  [
+    authMiddleware,
+    roleMiddleware(['admin']),
+    param('id').isMongoId().withMessage('Invalid equipment ID'),
+    validationMiddleware
+  ],
+  equipmentController.delete
+);
+
+/**
+ * @route   POST /api/equipment/:id/assign
+ * @desc    Assign equipment to user
+ * @access  Private (Admin, Technician)
+ */
+router.post(
+  '/:id/assign',
+  [
+    authMiddleware,
+    roleMiddleware(['admin', 'technician']),
+    param('id').isMongoId().withMessage('Invalid equipment ID'),
+    body('userId').isMongoId().withMessage('Invalid user ID'),
+    body('notes').optional().isString().withMessage('Notes must be a string'),
+    validationMiddleware
+  ],
+  equipmentController.assignToUser
+);
+
+/**
+ * @route   POST /api/equipment/:id/unassign
+ * @desc    Unassign equipment from user
+ * @access  Private (Admin, Technician)
+ */
+router.post(
+  '/:id/unassign',
+  [
+    authMiddleware,
+    roleMiddleware(['admin', 'technician']),
+    param('id').isMongoId().withMessage('Invalid equipment ID'),
+    validationMiddleware
+  ],
+  equipmentController.unassignFromUser
+);
+
+/**
+ * @route   GET /api/equipment/:id/history
+ * @desc    Get equipment history
+ * @access  Private (All authenticated users)
+ */
+router.get(
+  '/:id/history',
+  [
+    authMiddleware,
+    param('id').isMongoId().withMessage('Invalid equipment ID'),
+    validationMiddleware
+  ],
+  equipmentController.getHistory
+);
+
+/**
+ * @route   GET /api/equipment/export
+ * @desc    Export equipment list as CSV/Excel
+ * @access  Private (Admin, Technician)
+ */
+router.get(
+  '/export',
+  [
+    authMiddleware,
+    roleMiddleware(['admin', 'technician']),
+    query('status').optional().isIn(['available', 'assigned', 'maintenance', 'retired']).withMessage('Invalid status'),
+    query('type').optional().isString().withMessage('Type must be a string'),
+    query('format').optional().isIn(['csv', 'excel']).withMessage('Format must be csv or excel'),
+    validationMiddleware
+  ],
+  equipmentController.exportList
+);
+
+/**
+ * @route   POST /api/equipment/bulk-import
+ * @desc    Bulk import equipment from CSV/Excel
+ * @access  Private (Admin only)
+ */
+router.post(
+  '/bulk-import',
+  [
+    authMiddleware,
+    roleMiddleware(['admin']),
+    // File validation is handled by multer middleware in the controller
+    validationMiddleware
+  ],
+  equipmentController.bulkImport
+);
+
+/**
+ * @route   POST /api/equipment/:id/maintenance
+ * @desc    Set equipment to maintenance status
+ * @access  Private (Admin, Technician)
+ */
+router.post(
+  '/:id/maintenance',
+  [
+    authMiddleware,
+    roleMiddleware(['admin', 'technician']),
+    param('id').isMongoId().withMessage('Invalid equipment ID'),
+    body('reason').notEmpty().withMessage('Maintenance reason is required'),
+    body('estimatedCompletion').optional().isDate().withMessage('Estimated completion must be a valid date'),
+    validationMiddleware
+  ],
+  equipmentController.setMaintenance
+);
+
+/**
+ * @route   POST /api/equipment/:id/available
+ * @desc    Set equipment to available status
+ * @access  Private (Admin, Technician)
+ */
+router.post(
+  '/:id/available',
+  [
+    authMiddleware,
+    roleMiddleware(['admin', 'technician']),
+    param('id').isMongoId().withMessage('Invalid equipment ID'),
+    body('notes').optional().isString().withMessage('Notes must be a string'),
+    validationMiddleware
+  ],
+  equipmentController.setAvailable
+);
+
+/**
+ * @route   POST /api/equipment/:id/retire
+ * @desc    Retire equipment
+ * @access  Private (Admin only)
+ */
+router.post(
+  '/:id/retire',
+  [
+    authMiddleware,
+    roleMiddleware(['admin']),
+    param('id').isMongoId().withMessage('Invalid equipment ID'),
+    body('reason').notEmpty().withMessage('Retirement reason is required'),
+    validationMiddleware
+  ],
+  equipmentController.retireEquipment
+);
+
+/**
+ * @route   GET /api/equipment/stats
+ * @desc    Get equipment statistics
+ * @access  Private (Admin, Technician)
+ */
+router.get(
+  '/stats',
+  [
+    authMiddleware,
+    roleMiddleware(['admin', 'technician']),
+    validationMiddleware
+  ],
+  equipmentController.getStatistics
+);
+
+/**
+ * @route   GET /api/equipment/types
+ * @desc    Get all equipment types
+ * @access  Private (All authenticated users)
+ */
+router.get(
+  '/types',
+  [
+    authMiddleware,
+    validationMiddleware
+  ],
+  equipmentController.getTypes
+);
+
+module.exports = router;

@@ -1,0 +1,628 @@
+const Joi = require('joi');
+const { ValidationError } = require('../utils/errors');
+const constants = require('../utils/constants');
+
+/**
+ * Middleware для валидации данных запроса с использованием Joi схем
+ * 
+ * @param {Object} schema - Объект с Joi схемами для различных частей запроса
+ * @param {Object} schema.body - Joi схема для валидации req.body
+ * @param {Object} schema.query - Joi схема для валидации req.query
+ * @param {Object} schema.params - Joi схема для валидации req.params
+ * @param {Object} options - Опции валидации
+ * @param {boolean} options.stripUnknown - Удалять неизвестные поля (по умолчанию true)
+ * @param {boolean} options.abortEarly - Прерывать валидацию при первой ошибке (по умолчанию false)
+ * @returns {Function} Express middleware функция
+ */
+const validate = (schema, options = {}) => {
+  // Настройки валидации по умолчанию
+  const validationOptions = {
+    stripUnknown: true,
+    abortEarly: false,
+    ...options
+  };
+
+  return (req, res, next) => {
+    const validationErrors = {};
+    let hasError = false;
+
+    // Валидация тела запроса (req.body)
+    if (schema.body) {
+      const { error, value } = schema.body.validate(req.body, validationOptions);
+      if (error) {
+        hasError = true;
+        validationErrors.body = formatJoiErrors(error);
+      } else {
+        req.body = value;
+      }
+    }
+
+    // Валидация параметров запроса (req.params)
+    if (schema.params) {
+      const { error, value } = schema.params.validate(req.params, validationOptions);
+      if (error) {
+        hasError = true;
+        validationErrors.params = formatJoiErrors(error);
+      } else {
+        req.params = value;
+      }
+    }
+
+    // Валидация строки запроса (req.query)
+    if (schema.query) {
+      const { error, value } = schema.query.validate(req.query, validationOptions);
+      if (error) {
+        hasError = true;
+        validationErrors.query = formatJoiErrors(error);
+      } else {
+        req.query = value;
+      }
+    }
+
+    // Валидация файлов (req.files или req.file)
+    if (schema.files && req.files) {
+      const { error, value } = schema.files.validate(req.files, validationOptions);
+      if (error) {
+        hasError = true;
+        validationErrors.files = formatJoiErrors(error);
+      }
+    } else if (schema.file && req.file) {
+      const { error, value } = schema.file.validate(req.file, validationOptions);
+      if (error) {
+        hasError = true;
+        validationErrors.file = formatJoiErrors(error);
+      }
+    }
+
+    // Если есть ошибки валидации, возвращаем ответ с ошибками
+    if (hasError) {
+      return res.status(constants.HTTP_STATUS.BAD_REQUEST).json({
+        success: false,
+        error: {
+          message: 'Ошибка валидации данных',
+          details: validationErrors
+        }
+      });
+    }
+
+    // Если валидация прошла успешно, продолжаем выполнение запроса
+    next();
+  };
+};
+
+/**
+ * Форматирует ошибки валидации Joi в более удобный для клиента формат
+ * 
+ * @param {Object} error - Объект ошибки Joi
+ * @returns {Object} Отформатированные ошибки
+ */
+const formatJoiErrors = (error) => {
+  const formattedErrors = {};
+  
+  if (error.details && Array.isArray(error.details)) {
+    error.details.forEach((detail) => {
+      const path = detail.path.join('.');
+      formattedErrors[path] = detail.message.replace(/['"]/g, '');
+    });
+  }
+  
+  return formattedErrors;
+};
+
+/**
+ * Предопределенные схемы валидации для общих сценариев
+ */
+const schemas = {
+  // Схемы для аутентификации
+  auth: {
+    login: Joi.object({
+      email: Joi.string().email().required().messages({
+        'string.email': 'Введите корректный email адрес',
+        'string.empty': 'Email не может быть пустым',
+        'any.required': 'Email обязателен для входа'
+      }),
+      password: Joi.string().min(6).required().messages({
+        'string.min': 'Пароль должен содержать минимум {#limit} символов',
+        'string.empty': 'Пароль не может быть пустым',
+        'any.required': 'Пароль обязателен для входа'
+      })
+    }),
+    
+    register: Joi.object({
+      email: Joi.string().email().required().messages({
+        'string.email': 'Введите корректный email адрес',
+        'string.empty': 'Email не может быть пустым',
+        'any.required': 'Email обязателен для регистрации'
+      }),
+      password: Joi.string().min(6).required().messages({
+        'string.min': 'Пароль должен содержать минимум {#limit} символов',
+        'string.empty': 'Пароль не может быть пустым',
+        'any.required': 'Пароль обязателен для регистрации'
+      }),
+      username: Joi.string().min(3).max(30).required().messages({
+        'string.min': 'Имя пользователя должно содержать минимум {#limit} символов',
+        'string.max': 'Имя пользователя должно содержать максимум {#limit} символов',
+        'string.empty': 'Имя пользователя не может быть пустым',
+        'any.required': 'Имя пользователя обязательно для регистрации'
+      }),
+      firstName: Joi.string().min(2).max(50).messages({
+        'string.min': 'Имя должно содержать минимум {#limit} символов',
+        'string.max': 'Имя должно содержать максимум {#limit} символов'
+      }),
+      lastName: Joi.string().min(2).max(50).messages({
+        'string.min': 'Фамилия должна содержать минимум {#limit} символов',
+        'string.max': 'Фамилия должна содержать максимум {#limit} символов'
+      }),
+      role: Joi.string().valid('user', 'technician', 'admin').default('user').messages({
+        'any.only': 'Роль должна быть одной из: user, technician, admin'
+      })
+    }),
+    
+    forgotPassword: Joi.object({
+      email: Joi.string().email().required().messages({
+        'string.email': 'Введите корректный email адрес',
+        'string.empty': 'Email не может быть пустым',
+        'any.required': 'Email обязателен для восстановления пароля'
+      })
+    }),
+    
+    resetPassword: Joi.object({
+      token: Joi.string().required().messages({
+        'string.empty': 'Токен не может быть пустым',
+        'any.required': 'Токен обязателен для сброса пароля'
+      }),
+      password: Joi.string().min(6).required().messages({
+        'string.min': 'Пароль должен содержать минимум {#limit} символов',
+        'string.empty': 'Пароль не может быть пустым',
+        'any.required': 'Пароль обязателен для сброса'
+      }),
+      confirmPassword: Joi.string().valid(Joi.ref('password')).required().messages({
+        'any.only': 'Пароли должны совпадать',
+        'any.required': 'Подтверждение пароля обязательно'
+      })
+    }),
+    
+    changePassword: Joi.object({
+      currentPassword: Joi.string().required().messages({
+        'string.empty': 'Текущий пароль не может быть пустым',
+        'any.required': 'Текущий пароль обязателен'
+      }),
+      newPassword: Joi.string().min(6).required().messages({
+        'string.min': 'Новый пароль должен содержать минимум {#limit} символов',
+        'string.empty': 'Новый пароль не может быть пустым',
+        'any.required': 'Новый пароль обязателен'
+      }),
+      confirmPassword: Joi.string().valid(Joi.ref('newPassword')).required().messages({
+        'any.only': 'Пароли должны совпадать',
+        'any.required': 'Подтверждение пароля обязательно'
+      })
+    }),
+    
+    updateProfile: Joi.object({
+      username: Joi.string().min(3).max(30).messages({
+        'string.min': 'Имя пользователя должно содержать минимум {#limit} символов',
+        'string.max': 'Имя пользователя должно содержать максимум {#limit} символов'
+      }),
+      firstName: Joi.string().min(2).max(50).messages({
+        'string.min': 'Имя должно содержать минимум {#limit} символов',
+        'string.max': 'Имя должно содержать максимум {#limit} символов'
+      }),
+      lastName: Joi.string().min(2).max(50).messages({
+        'string.min': 'Фамилия должна содержать минимум {#limit} символов',
+        'string.max': 'Фамилия должна содержать максимум {#limit} символов'
+      }),
+      email: Joi.string().email().messages({
+        'string.email': 'Введите корректный email адрес'
+      }),
+      phone: Joi.string().pattern(/^\+?[0-9]{10,15}$/).messages({
+        'string.pattern.base': 'Введите корректный номер телефона'
+      }),
+      department: Joi.string().max(100).messages({
+        'string.max': 'Название отдела должно содержать максимум {#limit} символов'
+      }),
+      position: Joi.string().max(100).messages({
+        'string.max': 'Название должности должно содержать максимум {#limit} символов'
+      })
+    })
+  },
+  
+  // Схемы для инцидентов
+  incidents: {
+    create: Joi.object({
+      title: Joi.string().min(5).max(200).required().messages({
+        'string.min': 'Заголовок должен содержать минимум {#limit} символов',
+        'string.max': 'Заголовок должен содержать максимум {#limit} символов',
+        'string.empty': 'Заголовок не может быть пустым',
+        'any.required': 'Заголовок обязателен'
+      }),
+      description: Joi.string().min(10).max(2000).required().messages({
+        'string.min': 'Описание должно содержать минимум {#limit} символов',
+        'string.max': 'Описание должно содержать максимум {#limit} символов',
+        'string.empty': 'Описание не может быть пустым',
+        'any.required': 'Описание обязательно'
+      }),
+      priority: Joi.string().valid('low', 'medium', 'high', 'critical').default('medium').messages({
+        'any.only': 'Приоритет должен быть одним из: low, medium, high, critical'
+      }),
+      category: Joi.string().required().messages({
+        'string.empty': 'Категория не может быть пустой',
+        'any.required': 'Категория обязательна'
+      }),
+      equipmentId: Joi.string().regex(/^[0-9a-fA-F]{24}$/).allow(null).messages({
+        'string.pattern.base': 'Некорректный ID оборудования'
+      }),
+      attachments: Joi.array().items(
+        Joi.object({
+          filename: Joi.string().required(),
+          path: Joi.string().required(),
+          mimetype: Joi.string().required(),
+          size: Joi.number().required()
+        })
+      )
+    }),
+    
+    update: Joi.object({
+      title: Joi.string().min(5).max(200).messages({
+        'string.min': 'Заголовок должен содержать минимум {#limit} символов',
+        'string.max': 'Заголовок должен содержать максимум {#limit} символов'
+      }),
+      description: Joi.string().min(10).max(2000).messages({
+        'string.min': 'Описание должно содержать минимум {#limit} символов',
+        'string.max': 'Описание должно содержать максимум {#limit} символов'
+      }),
+      status: Joi.string().valid('new', 'in_progress', 'on_hold', 'resolved', 'closed').messages({
+        'any.only': 'Статус должен быть одним из: new, in_progress, on_hold, resolved, closed'
+      }),
+      priority: Joi.string().valid('low', 'medium', 'high', 'critical').messages({
+        'any.only': 'Приоритет должен быть одним из: low, medium, high, critical'
+      }),
+      category: Joi.string(),
+      assignedTo: Joi.string().regex(/^[0-9a-fA-F]{24}$/).allow(null).messages({
+        'string.pattern.base': 'Некорректный ID пользователя'
+      }),
+      resolution: Joi.string().max(2000).allow('', null).messages({
+        'string.max': 'Решение должно содержать максимум {#limit} символов'
+      }),
+      equipmentId: Joi.string().regex(/^[0-9a-fA-F]{24}$/).allow(null).messages({
+        'string.pattern.base': 'Некорректный ID оборудования'
+      })
+    }),
+    
+    comment: Joi.object({
+      text: Joi.string().min(1).max(1000).required().messages({
+        'string.min': 'Комментарий должен содержать минимум {#limit} символов',
+        'string.max': 'Комментарий должен содержать максимум {#limit} символов',
+        'string.empty': 'Комментарий не может быть пустым',
+        'any.required': 'Текст комментария обязателен'
+      }),
+      isInternal: Joi.boolean().default(false)
+    }),
+    
+    filter: Joi.object({
+      status: Joi.alternatives().try(
+        Joi.string().valid('new', 'in_progress', 'on_hold', 'resolved', 'closed'),
+        Joi.array().items(Joi.string().valid('new', 'in_progress', 'on_hold', 'resolved', 'closed'))
+      ),
+      priority: Joi.alternatives().try(
+        Joi.string().valid('low', 'medium', 'high', 'critical'),
+        Joi.array().items(Joi.string().valid('low', 'medium', 'high', 'critical'))
+      ),
+      category: Joi.alternatives().try(
+        Joi.string(),
+        Joi.array().items(Joi.string())
+      ),
+      assignedTo: Joi.string().regex(/^[0-9a-fA-F]{24}$/).allow(null).messages({
+        'string.pattern.base': 'Некорректный ID пользователя'
+      }),
+      createdBy: Joi.string().regex(/^[0-9a-fA-F]{24}$/).messages({
+        'string.pattern.base': 'Некорректный ID пользователя'
+      }),
+      equipmentId: Joi.string().regex(/^[0-9a-fA-F]{24}$/).messages({
+        'string.pattern.base': 'Некорректный ID оборудования'
+      }),
+      startDate: Joi.date().iso(),
+      endDate: Joi.date().iso().min(Joi.ref('startDate')).messages({
+        'date.min': 'Дата окончания должна быть позже даты начала'
+      }),
+      search: Joi.string().max(100).messages({
+        'string.max': 'Поисковый запрос должен содержать максимум {#limit} символов'
+      }),
+      page: Joi.number().integer().min(1).default(1).messages({
+        'number.base': 'Номер страницы должен быть числом',
+        'number.integer': 'Номер страницы должен быть целым числом',
+        'number.min': 'Номер страницы должен быть не меньше {#limit}'
+      }),
+      limit: Joi.number().integer().min(1).max(100).default(10).messages({
+        'number.base': 'Лимит должен быть числом',
+        'number.integer': 'Лимит должен быть целым числом',
+        'number.min': 'Лимит должен быть не меньше {#limit}',
+        'number.max': 'Лимит должен быть не больше {#limit}'
+      }),
+      sortBy: Joi.string().valid('createdAt', 'updatedAt', 'priority', 'status').default('createdAt'),
+      sortOrder: Joi.string().valid('asc', 'desc').default('desc')
+    })
+  },
+  
+  // Схемы для оборудования
+  equipment: {
+    create: Joi.object({
+      name: Joi.string().min(2).max(100).required().messages({
+        'string.min': 'Название должно содержать минимум {#limit} символов',
+        'string.max': 'Название должно содержать максимум {#limit} символов',
+        'string.empty': 'Название не может быть пустым',
+        'any.required': 'Название обязательно'
+      }),
+      type: Joi.string().required().messages({
+        'string.empty': 'Тип оборудования не может быть пустым',
+        'any.required': 'Тип оборудования обязателен'
+      }),
+      serialNumber: Joi.string().max(100).allow('', null).messages({
+        'string.max': 'Серийный номер должен содержать максимум {#limit} символов'
+      }),
+      inventoryNumber: Joi.string().max(100).allow('', null).messages({
+        'string.max': 'Инвентарный номер должен содержать максимум {#limit} символов'
+      }),
+      location: Joi.string().max(200).allow('', null).messages({
+        'string.max': 'Местоположение должно содержать максимум {#limit} символов'
+      }),
+      purchaseDate: Joi.date().iso().allow(null),
+      warrantyExpiryDate: Joi.date().iso().min(Joi.ref('purchaseDate')).allow(null).messages({
+        'date.min': 'Дата окончания гарантии должна быть позже даты покупки'
+      }),
+      status: Joi.string().valid('active', 'in_repair', 'decommissioned', 'reserved').default('active').messages({
+        'any.only': 'Статус должен быть одним из: active, in_repair, decommissioned, reserved'
+      }),
+      assignedTo: Joi.string().regex(/^[0-9a-fA-F]{24}$/).allow(null).messages({
+        'string.pattern.base': 'Некорректный ID пользователя'
+      }),
+      manufacturer: Joi.string().max(100).allow('', null).messages({
+        'string.max': 'Производитель должен содержать максимум {#limit} символов'
+      }),
+      model: Joi.string().max(100).allow('', null).messages({
+        'string.max': 'Модель должна содержать максимум {#limit} символов'
+      }),
+      description: Joi.string().max(1000).allow('', null).messages({
+        'string.max': 'Описание должно содержать максимум {#limit} символов'
+      }),
+      specifications: Joi.object().allow(null),
+      attachments: Joi.array().items(
+        Joi.object({
+          filename: Joi.string().required(),
+          path: Joi.string().required(),
+          mimetype: Joi.string().required(),
+          size: Joi.number().required()
+        })
+      )
+    }),
+    
+    update: Joi.object({
+      name: Joi.string().min(2).max(100).messages({
+        'string.min': 'Название должно содержать минимум {#limit} символов',
+        'string.max': 'Название должно содержать максимум {#limit} символов'
+      }),
+      type: Joi.string(),
+      serialNumber: Joi.string().max(100).allow('', null).messages({
+        'string.max': 'Серийный номер должен содержать максимум {#limit} символов'
+      }),
+      inventoryNumber: Joi.string().max(100).allow('', null).messages({
+        'string.max': 'Инвентарный номер должен содержать максимум {#limit} символов'
+      }),
+      location: Joi.string().max(200).allow('', null).messages({
+        'string.max': 'Местоположение должно содержать максимум {#limit} символов'
+      }),
+      purchaseDate: Joi.date().iso().allow(null),
+      warrantyExpiryDate: Joi.date().iso().allow(null),
+      status: Joi.string().valid('active', 'in_repair', 'decommissioned', 'reserved').messages({
+        'any.only': 'Статус должен быть одним из: active, in_repair, decommissioned, reserved'
+      }),
+      assignedTo: Joi.string().regex(/^[0-9a-fA-F]{24}$/).allow(null).messages({
+        'string.pattern.base': 'Некорректный ID пользователя'
+      }),
+      manufacturer: Joi.string().max(100).allow('', null).messages({
+        'string.max': 'Производитель должен содержать максимум {#limit} символов'
+      }),
+      model: Joi.string().max(100).allow('', null).messages({
+        'string.max': 'Модель должна содержать максимум {#limit} символов'
+      }),
+      description: Joi.string().max(1000).allow('', null).messages({
+        'string.max': 'Описание должно содержать максимум {#limit} символов'
+      }),
+      specifications: Joi.object().allow(null)
+    }),
+    
+    filter: Joi.object({
+      type: Joi.alternatives().try(
+        Joi.string(),
+        Joi.array().items(Joi.string())
+      ),
+      status: Joi.alternatives().try(
+        Joi.string().valid('active', 'in_repair', 'decommissioned', 'reserved'),
+        Joi.array().items(Joi.string().valid('active', 'in_repair', 'decommissioned', 'reserved'))
+      ),
+      assignedTo: Joi.string().regex(/^[0-9a-fA-F]{24}$/).allow(null).messages({
+        'string.pattern.base': 'Некорректный ID пользователя'
+      }),
+      location: Joi.string(),
+      manufacturer: Joi.string(),
+      purchaseDateFrom: Joi.date().iso(),
+      purchaseDateTo: Joi.date().iso().min(Joi.ref('purchaseDateFrom')).messages({
+        'date.min': 'Конечная дата покупки должна быть позже начальной'
+      }),
+      warrantyExpiryDateFrom: Joi.date().iso(),
+      warrantyExpiryDateTo: Joi.date().iso().min(Joi.ref('warrantyExpiryDateFrom')).messages({
+        'date.min': 'Конечная дата гарантии должна быть позже начальной'
+      }),
+      search: Joi.string().max(100).messages({
+        'string.max': 'Поисковый запрос должен содержать максимум {#limit} символов'
+      }),
+      page: Joi.number().integer().min(1).default(1).messages({
+        'number.base': 'Номер страницы должен быть числом',
+        'number.integer': 'Номер страницы должен быть целым числом',
+        'number.min': 'Номер страницы должен быть не меньше {#limit}'
+      }),
+      limit: Joi.number().integer().min(1).max(100).default(10).messages({
+        'number.base': 'Лимит должен быть числом',
+        'number.integer': 'Лимит должен быть целым числом',
+        'number.min': 'Лимит должен быть не меньше {#limit}',
+        'number.max': 'Лимит должен быть не больше {#limit}'
+      }),
+      sortBy: Joi.string().valid('name', 'type', 'status', 'purchaseDate', 'warrantyExpiryDate').default('name'),
+      sortOrder: Joi.string().valid('asc', 'desc').default('asc')
+    })
+  },
+  
+  // Схемы для отчетов
+  reports: {
+    generate: Joi.object({
+      type: Joi.string().valid('incidents', 'equipment', 'performance').required().messages({
+        'any.only': 'Тип отчета должен быть одним из: incidents, equipment, performance',
+        'any.required': 'Тип отчета обязателен'
+      }),
+      format: Joi.string().valid('pdf', 'excel', 'csv').default('pdf').messages({
+        'any.only': 'Формат отчета должен быть одним из: pdf, excel, csv'
+      }),
+      startDate: Joi.date().iso().required().messages({
+        'date.base': 'Дата начала должна быть валидной датой',
+        'any.required': 'Дата начала обязательна'
+      }),
+      endDate: Joi.date().iso().min(Joi.ref('startDate')).required().messages({
+        'date.base': 'Дата окончания должна быть валидной датой',
+        'date.min': 'Дата окончания должна быть позже даты начала',
+        'any.required': 'Дата окончания обязательна'
+      }),
+      filters: Joi.object({
+        status: Joi.alternatives().try(
+          Joi.string(),
+          Joi.array().items(Joi.string())
+        ),
+        priority: Joi.alternatives().try(
+          Joi.string(),
+          Joi.array().items(Joi.string())
+        ),
+        category: Joi.alternatives().try(
+          Joi.string(),
+          Joi.array().items(Joi.string())
+        ),
+        assignedTo: Joi.string().regex(/^[0-9a-fA-F]{24}$/).allow(null),
+        equipmentType: Joi.alternatives().try(
+          Joi.string(),
+          Joi.array().items(Joi.string())
+        ),
+        location: Joi.string()
+      }).allow(null),
+      groupBy: Joi.string().valid('day', 'week', 'month', 'category', 'priority', 'status', 'assignedTo', 'type', 'location').messages({
+        'any.only': 'Группировка должна быть одной из: day, week, month, category, priority, status, assignedTo, type, location'
+      }),
+      includeCharts: Joi.boolean().default(true),
+      title: Joi.string().max(200).messages({
+        'string.max': 'Заголовок отчета должен содержать максимум {#limit} символов'
+      }),
+      description: Joi.string().max(1000).messages({
+        'string.max': 'Описание отчета должно содержать максимум {#limit} символов'
+      })
+    }),
+    
+    list: Joi.object({
+      type: Joi.string().valid('incidents', 'equipment', 'performance').messages({
+        'any.only': 'Тип отчета должен быть одним из: incidents, equipment, performance'
+      }),
+      startDate: Joi.date().iso(),
+      endDate: Joi.date().iso().min(Joi.ref('startDate')).messages({
+        'date.min': 'Дата окончания должна быть позже даты начала'
+      }),
+      createdBy: Joi.string().regex(/^[0-9a-fA-F]{24}$/).messages({
+        'string.pattern.base': 'Некорректный ID пользователя'
+      }),
+      page: Joi.number().integer().min(1).default(1).messages({
+        'number.base': 'Номер страницы должен быть числом',
+        'number.integer': 'Номер страницы должен быть целым числом',
+        'number.min': 'Номер страницы должен быть не меньше {#limit}'
+      }),
+      limit: Joi.number().integer().min(1).max(100).default(10).messages({
+        'number.base': 'Лимит должен быть числом',
+        'number.integer': 'Лимит должен быть целым числом',
+        'number.min': 'Лимит должен быть не меньше {#limit}',
+        'number.max': 'Лимит должен быть не больше {#limit}'
+      }),
+      sortBy: Joi.string().valid('createdAt', 'type', 'title').default('createdAt'),
+      sortOrder: Joi.string().valid('asc', 'desc').default('desc')
+    })
+  },
+  
+  // Схемы для уведомлений
+  notifications: {
+    update: Joi.object({
+      isRead: Joi.boolean().required().messages({
+        'boolean.base': 'Статус прочтения должен быть булевым значением',
+        'any.required': 'Статус прочтения обязателен'
+      })
+    }),
+    
+    filter: Joi.object({
+      isRead: Joi.boolean(),
+      type: Joi.string().valid('incident', 'equipment', 'system', 'assignment'),
+      startDate: Joi.date().iso(),
+      endDate: Joi.date().iso().min(Joi.ref('startDate')).messages({
+        'date.min': 'Дата окончания должна быть позже даты начала'
+      }),
+      page: Joi.number().integer().min(1).default(1).messages({
+        'number.base': 'Номер страницы должен быть числом',
+        'number.integer': 'Номер страницы должен быть целым числом',
+        'number.min': 'Номер страницы должен быть не меньше {#limit}'
+      }),
+      limit: Joi.number().integer().min(1).max(100).default(10).messages({
+        'number.base': 'Лимит должен быть числом',
+        'number.integer': 'Лимит должен быть целым числом',
+        'number.min': 'Лимит должен быть не меньше {#limit}',
+        'number.max': 'Лимит должен быть не больше {#limit}'
+      }),
+      sortBy: Joi.string().valid('createdAt', 'type').default('createdAt'),
+      sortOrder: Joi.string().valid('asc', 'desc').default('desc')
+    })
+  },
+  
+  // Схемы для пагинации и общих параметров
+  common: {
+    pagination: Joi.object({
+      page: Joi.number().integer().min(1).default(1).messages({
+        'number.base': 'Номер страницы должен быть числом',
+        'number.integer': 'Номер страницы должен быть целым числом',
+        'number.min': 'Номер страницы должен быть не меньше {#limit}'
+      }),
+      limit: Joi.number().integer().min(1).max(100).default(10).messages({
+        'number.base': 'Лимит должен быть числом',
+        'number.integer': 'Лимит должен быть целым числом',
+        'number.min': 'Лимит должен быть не меньше {#limit}',
+        'number.max': 'Лимит должен быть не больше {#limit}'
+      }),
+      sortBy: Joi.string(),
+      sortOrder: Joi.string().valid('asc', 'desc').default('desc')
+    }),
+    
+    mongoId: Joi.object({
+      id: Joi.string().regex(/^[0-9a-fA-F]{24}$/).required().messages({
+        'string.pattern.base': 'Некорректный ID',
+        'string.empty': 'ID не может быть пустым',
+        'any.required': 'ID обязателен'
+      })
+    }),
+    
+    dateRange: Joi.object({
+      startDate: Joi.date().iso().required().messages({
+        'date.base': 'Дата начала должна быть валидной датой',
+        'any.required': 'Дата начала обязательна'
+      }),
+      endDate: Joi.date().iso().min(Joi.ref('startDate')).required().messages({
+        'date.base': 'Дата окончания должна быть валидной датой',
+        'date.min': 'Дата окончания должна быть позже даты начала',
+        'any.required': 'Дата окончания обязательна'
+      })
+    })
+  }
+};
+
+module.exports = {
+  validate,
+  schemas,
+  formatJoiErrors
+};

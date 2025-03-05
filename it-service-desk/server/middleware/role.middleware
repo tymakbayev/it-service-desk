@@ -1,0 +1,124 @@
+/**
+ * Middleware для проверки ролей пользователей
+ * Обеспечивает контроль доступа на основе ролей пользователей
+ * 
+ * @module middleware/role.middleware
+ */
+const { ForbiddenError, AuthenticationError } = require('../utils/errors');
+const RoleModel = require('../models/role.model');
+const config = require('../config/config');
+const logger = require('../config/winston');
+
+/**
+ * Middleware для проверки роли пользователя
+ * @param {Array|String} roles - Массив разрешенных ролей или одна роль
+ * @returns {Function} Middleware функция
+ */
+const roleMiddleware = (roles) => {
+  // Преобразуем одиночную роль в массив
+  const allowedRoles = Array.isArray(roles) ? roles : [roles];
+  
+  return async (req, res, next) => {
+    try {
+      // Проверка наличия пользователя в запросе (должен быть добавлен auth.middleware)
+      if (!req.user) {
+        throw new AuthenticationError('Пользователь не авторизован');
+      }
+
+      const { role, id } = req.user;
+      
+      // Проверка роли пользователя
+      if (!allowedRoles.includes(role)) {
+        logger.warn(`Отказано в доступе: пользователь ${id} с ролью ${role} пытался получить доступ к ${req.originalUrl}`);
+        throw new ForbiddenError('У вас нет прав для выполнения этого действия');
+      }
+      
+      // Если требуется проверка конкретных разрешений для роли
+      if (req.permissions) {
+        const { resource, action } = req.permissions;
+        
+        // Получаем полную информацию о роли из базы данных
+        const roleDoc = await RoleModel.findByName(role);
+        
+        if (!roleDoc) {
+          logger.error(`Роль ${role} не найдена в базе данных для пользователя ${id}`);
+          throw new ForbiddenError('Роль пользователя не настроена');
+        }
+        
+        // Проверка наличия конкретного разрешения
+        if (!roleDoc.hasPermission(resource, action)) {
+          logger.warn(`Отказано в доступе: пользователь ${id} с ролью ${role} не имеет разрешения ${action} для ресурса ${resource}`);
+          throw new ForbiddenError(`У вас нет разрешения ${action} для ресурса ${resource}`);
+        }
+      }
+      
+      // Добавляем информацию о роли в объект запроса для использования в контроллерах
+      req.userRole = role;
+      
+      // Если роль администратора, добавляем флаг для упрощения проверок
+      if (role === config.ROLES.ADMIN) {
+        req.isAdmin = true;
+      }
+      
+      next();
+    } catch (error) {
+      next(error);
+    }
+  };
+};
+
+/**
+ * Middleware для проверки конкретного разрешения
+ * @param {String} resource - Ресурс, к которому запрашивается доступ
+ * @param {String} action - Действие, которое требуется выполнить
+ * @returns {Function} Middleware функция
+ */
+const permissionMiddleware = (resource, action) => {
+  return (req, res, next) => {
+    // Добавляем информацию о требуемых разрешениях
+    req.permissions = { resource, action };
+    
+    // Администраторы имеют все разрешения по умолчанию
+    if (req.user && req.user.role === config.ROLES.ADMIN) {
+      return next();
+    }
+    
+    // Для остальных ролей будет выполнена проверка в roleMiddleware
+    next();
+  };
+};
+
+/**
+ * Middleware для проверки, является ли пользователь владельцем ресурса
+ * @param {Function} getOwnerId - Функция для получения ID владельца ресурса из запроса
+ * @returns {Function} Middleware функция
+ */
+const ownershipMiddleware = (getOwnerId) => {
+  return async (req, res, next) => {
+    try {
+      // Администраторы имеют доступ ко всем ресурсам
+      if (req.user && req.user.role === config.ROLES.ADMIN) {
+        return next();
+      }
+      
+      // Получаем ID владельца ресурса
+      const ownerId = await getOwnerId(req);
+      
+      // Проверяем, является ли текущий пользователь владельцем
+      if (req.user && req.user.id.toString() === ownerId.toString()) {
+        return next();
+      }
+      
+      // Если не владелец, отказываем в доступе
+      throw new ForbiddenError('У вас нет прав для доступа к этому ресурсу');
+    } catch (error) {
+      next(error);
+    }
+  };
+};
+
+module.exports = {
+  roleMiddleware,
+  permissionMiddleware,
+  ownershipMiddleware
+};

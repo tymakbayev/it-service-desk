@@ -1,0 +1,997 @@
+/**
+ * PDF Service
+ * 
+ * Сервис для генерации PDF-отчетов и документов на основе данных из системы IT Service Desk.
+ * Поддерживает создание отчетов по инцидентам, оборудованию, пользователям и другим сущностям.
+ * Предоставляет функции для форматирования, стилизации и экспорта данных в формате PDF.
+ */
+
+const PDFDocument = require('pdfkit');
+const fs = require('fs');
+const path = require('path');
+const { format } = require('date-fns');
+const config = require('../config/config');
+const logger = require('../config/winston');
+
+class PDFService {
+  /**
+   * Создает новый экземпляр сервиса PDF
+   */
+  constructor() {
+    this.tempDir = path.join(__dirname, '../temp');
+    
+    // Создаем временную директорию, если она не существует
+    if (!fs.existsSync(this.tempDir)) {
+      fs.mkdirSync(this.tempDir, { recursive: true });
+    }
+    
+    // Настройки по умолчанию для документов
+    this.defaultOptions = {
+      size: 'A4',
+      margin: 50,
+      info: {
+        Producer: 'IT Service Desk',
+        Creator: 'IT Service Desk PDF Service',
+        CreationDate: new Date()
+      }
+    };
+    
+    // Пути к шрифтам
+    this.fonts = {
+      regular: path.join(__dirname, '../assets/fonts/Roboto-Regular.ttf'),
+      bold: path.join(__dirname, '../assets/fonts/Roboto-Bold.ttf'),
+      italic: path.join(__dirname, '../assets/fonts/Roboto-Italic.ttf'),
+      boldItalic: path.join(__dirname, '../assets/fonts/Roboto-BoldItalic.ttf')
+    };
+    
+    // Цвета для документов
+    this.colors = {
+      primary: '#4472C4',
+      secondary: '#5B9BD5',
+      success: '#70AD47',
+      warning: '#FFC000',
+      danger: '#C00000',
+      info: '#2F5597',
+      light: '#F2F2F2',
+      dark: '#404040',
+      text: '#333333',
+      border: '#D9D9D9'
+    };
+  }
+
+  /**
+   * Генерирует уникальное имя файла для PDF-документа
+   * @param {string} prefix - Префикс имени файла
+   * @returns {string} Полный путь к файлу
+   */
+  generateFileName(prefix) {
+    const timestamp = format(new Date(), 'yyyyMMdd_HHmmss');
+    const randomString = Math.random().toString(36).substring(2, 8);
+    return path.join(this.tempDir, `${prefix}_${timestamp}_${randomString}.pdf`);
+  }
+
+  /**
+   * Создает новый PDF-документ с настройками по умолчанию
+   * @param {Object} options - Опции для создания документа
+   * @returns {PDFDocument} Экземпляр PDFDocument
+   */
+  createDocument(options = {}) {
+    const mergedOptions = { ...this.defaultOptions, ...options };
+    const doc = new PDFDocument(mergedOptions);
+    
+    // Регистрируем шрифты
+    doc.registerFont('Regular', this.fonts.regular);
+    doc.registerFont('Bold', this.fonts.bold);
+    doc.registerFont('Italic', this.fonts.italic);
+    doc.registerFont('BoldItalic', this.fonts.boldItalic);
+    
+    // Устанавливаем шрифт по умолчанию
+    doc.font('Regular').fontSize(12);
+    
+    return doc;
+  }
+
+  /**
+   * Добавляет заголовок документа
+   * @param {PDFDocument} doc - Экземпляр PDFDocument
+   * @param {string} title - Заголовок документа
+   * @param {string} subtitle - Подзаголовок документа (опционально)
+   */
+  addHeader(doc, title, subtitle = null) {
+    // Логотип компании (если есть)
+    const logoPath = path.join(__dirname, '../assets/images/logo.png');
+    if (fs.existsSync(logoPath)) {
+      doc.image(logoPath, 50, 50, { width: 100 });
+      doc.moveDown(2);
+    }
+    
+    // Заголовок
+    doc.font('Bold').fontSize(20).fillColor(this.colors.primary);
+    doc.text(title, { align: 'center' });
+    doc.moveDown(0.5);
+    
+    // Подзаголовок (если есть)
+    if (subtitle) {
+      doc.font('Regular').fontSize(14).fillColor(this.colors.secondary);
+      doc.text(subtitle, { align: 'center' });
+      doc.moveDown(0.5);
+    }
+    
+    // Дата создания
+    doc.font('Italic').fontSize(10).fillColor(this.colors.dark);
+    doc.text(`Создано: ${format(new Date(), 'dd.MM.yyyy HH:mm')}`, { align: 'right' });
+    
+    // Горизонтальная линия
+    doc.moveDown(0.5);
+    doc.strokeColor(this.colors.primary).lineWidth(1);
+    doc.moveTo(50, doc.y).lineTo(doc.page.width - 50, doc.y).stroke();
+    doc.moveDown(1);
+    
+    // Возвращаем к обычному стилю текста
+    doc.font('Regular').fontSize(12).fillColor(this.colors.text);
+  }
+
+  /**
+   * Добавляет нижний колонтитул на каждую страницу
+   * @param {PDFDocument} doc - Экземпляр PDFDocument
+   */
+  addFooter(doc) {
+    const pages = doc.bufferedPageRange();
+    for (let i = 0; i < pages.count; i++) {
+      doc.switchToPage(i);
+      
+      // Сохраняем текущую позицию
+      const originalY = doc.y;
+      
+      // Перемещаемся в нижнюю часть страницы
+      doc.fontSize(10).fillColor(this.colors.dark);
+      
+      // Горизонтальная линия
+      doc.strokeColor(this.colors.border).lineWidth(0.5);
+      doc.moveTo(50, doc.page.height - 50).lineTo(doc.page.width - 50, doc.page.height - 50).stroke();
+      
+      // Номер страницы
+      doc.text(
+        `Страница ${i + 1} из ${pages.count}`,
+        50,
+        doc.page.height - 40,
+        { align: 'center', width: doc.page.width - 100 }
+      );
+      
+      // Информация о компании
+      doc.text(
+        `IT Service Desk - ${config.app.name}`,
+        50,
+        doc.page.height - 30,
+        { align: 'center', width: doc.page.width - 100 }
+      );
+      
+      // Восстанавливаем позицию
+      doc.y = originalY;
+    }
+  }
+
+  /**
+   * Добавляет таблицу с данными в документ
+   * @param {PDFDocument} doc - Экземпляр PDFDocument
+   * @param {Array<string>} headers - Заголовки столбцов
+   * @param {Array<Array<string|number>>} data - Данные таблицы
+   * @param {Object} options - Опции таблицы
+   */
+  addTable(doc, headers, data, options = {}) {
+    const defaultOptions = {
+      headerColor: this.colors.primary,
+      headerTextColor: '#FFFFFF',
+      rowColors: [this.colors.light, '#FFFFFF'],
+      textColor: this.colors.text,
+      fontSize: 10,
+      padding: 8,
+      columnWidths: null
+    };
+    
+    const tableOptions = { ...defaultOptions, ...options };
+    
+    // Вычисляем ширину столбцов, если не указана
+    const availableWidth = doc.page.width - 100; // 50px отступ с каждой стороны
+    let columnWidths = tableOptions.columnWidths;
+    
+    if (!columnWidths) {
+      const columnCount = headers.length;
+      columnWidths = Array(columnCount).fill(availableWidth / columnCount);
+    }
+    
+    // Начальные координаты
+    let x = 50;
+    let y = doc.y;
+    
+    // Отрисовка заголовков
+    doc.font('Bold').fontSize(tableOptions.fontSize).fillColor(tableOptions.headerTextColor);
+    
+    headers.forEach((header, i) => {
+      // Фон ячейки заголовка
+      doc.rect(x, y, columnWidths[i], tableOptions.padding * 3)
+         .fill(tableOptions.headerColor);
+      
+      // Текст заголовка
+      doc.fillColor(tableOptions.headerTextColor)
+         .text(header, x + tableOptions.padding, y + tableOptions.padding, {
+           width: columnWidths[i] - tableOptions.padding * 2,
+           align: 'left'
+         });
+      
+      x += columnWidths[i];
+    });
+    
+    // Переходим к данным
+    y += tableOptions.padding * 3;
+    doc.font('Regular').fontSize(tableOptions.fontSize).fillColor(tableOptions.textColor);
+    
+    // Отрисовка данных
+    data.forEach((row, rowIndex) => {
+      // Проверяем, не выходим ли за пределы страницы
+      if (y + tableOptions.padding * 3 > doc.page.height - 70) {
+        doc.addPage();
+        y = 50; // Отступ сверху на новой странице
+      }
+      
+      // Фон строки (чередование цветов)
+      const rowColor = tableOptions.rowColors[rowIndex % tableOptions.rowColors.length];
+      x = 50;
+      
+      // Определяем максимальную высоту строки
+      let maxRowHeight = tableOptions.padding * 3;
+      
+      // Предварительный расчет высоты каждой ячейки
+      const cellHeights = row.map((cell, i) => {
+        const cellText = String(cell);
+        const cellWidth = columnWidths[i] - tableOptions.padding * 2;
+        const textHeight = this.calculateTextHeight(doc, cellText, cellWidth, tableOptions.fontSize);
+        return textHeight + tableOptions.padding * 2;
+      });
+      
+      maxRowHeight = Math.max(maxRowHeight, ...cellHeights);
+      
+      // Рисуем фон строки
+      doc.rect(50, y, availableWidth, maxRowHeight)
+         .fill(rowColor);
+      
+      // Рисуем текст ячеек
+      row.forEach((cell, i) => {
+        const cellText = String(cell);
+        
+        // Рисуем границы ячейки
+        doc.strokeColor(tableOptions.headerColor).lineWidth(0.5)
+           .rect(x, y, columnWidths[i], maxRowHeight)
+           .stroke();
+        
+        // Рисуем текст ячейки
+        doc.fillColor(tableOptions.textColor)
+           .text(cellText, x + tableOptions.padding, y + tableOptions.padding, {
+             width: columnWidths[i] - tableOptions.padding * 2,
+             align: 'left'
+           });
+        
+        x += columnWidths[i];
+      });
+      
+      y += maxRowHeight;
+    });
+    
+    // Обновляем позицию курсора
+    doc.y = y + 20;
+    
+    return doc;
+  }
+
+  /**
+   * Рассчитывает высоту текста при заданной ширине и размере шрифта
+   * @param {PDFDocument} doc - Экземпляр PDFDocument
+   * @param {string} text - Текст для расчета
+   * @param {number} width - Ширина блока текста
+   * @param {number} fontSize - Размер шрифта
+   * @returns {number} Высота текста
+   */
+  calculateTextHeight(doc, text, width, fontSize) {
+    // Сохраняем текущие настройки
+    const currentFont = doc._font;
+    const currentFontSize = doc._fontSize;
+    
+    // Устанавливаем нужные настройки
+    doc.fontSize(fontSize);
+    
+    // Рассчитываем высоту текста
+    const textHeight = doc.heightOfString(text, { width });
+    
+    // Восстанавливаем настройки
+    doc.fontSize(currentFontSize);
+    doc._font = currentFont;
+    
+    return textHeight;
+  }
+
+  /**
+   * Добавляет секцию с информацией о сущности (инцидент, оборудование и т.д.)
+   * @param {PDFDocument} doc - Экземпляр PDFDocument
+   * @param {string} title - Заголовок секции
+   * @param {Object} data - Данные для отображения
+   * @param {Array<string>} fields - Поля для отображения
+   */
+  addEntitySection(doc, title, data, fields) {
+    // Заголовок секции
+    doc.font('Bold').fontSize(14).fillColor(this.colors.primary);
+    doc.text(title);
+    doc.moveDown(0.5);
+    
+    // Горизонтальная линия
+    doc.strokeColor(this.colors.secondary).lineWidth(0.5);
+    doc.moveTo(50, doc.y).lineTo(doc.page.width - 50, doc.y).stroke();
+    doc.moveDown(0.5);
+    
+    // Отображаем данные
+    doc.font('Regular').fontSize(12).fillColor(this.colors.text);
+    
+    fields.forEach(field => {
+      if (data[field.key] !== undefined) {
+        doc.font('Bold').fillColor(this.colors.secondary);
+        doc.text(`${field.label}: `, { continued: true });
+        
+        doc.font('Regular').fillColor(this.colors.text);
+        
+        // Форматирование значения в зависимости от типа
+        let value = data[field.key];
+        
+        if (field.type === 'date' && value) {
+          value = format(new Date(value), 'dd.MM.yyyy HH:mm');
+        } else if (field.type === 'status') {
+          // Цвет в зависимости от статуса
+          const statusColors = {
+            'open': this.colors.danger,
+            'in_progress': this.colors.warning,
+            'resolved': this.colors.success,
+            'closed': this.colors.dark
+          };
+          
+          const statusLabels = {
+            'open': 'Открыт',
+            'in_progress': 'В работе',
+            'resolved': 'Решен',
+            'closed': 'Закрыт'
+          };
+          
+          doc.fillColor(statusColors[value] || this.colors.text);
+          value = statusLabels[value] || value;
+        } else if (field.type === 'priority') {
+          // Цвет в зависимости от приоритета
+          const priorityColors = {
+            'high': this.colors.danger,
+            'medium': this.colors.warning,
+            'low': this.colors.success
+          };
+          
+          const priorityLabels = {
+            'high': 'Высокий',
+            'medium': 'Средний',
+            'low': 'Низкий'
+          };
+          
+          doc.fillColor(priorityColors[value] || this.colors.text);
+          value = priorityLabels[value] || value;
+        }
+        
+        doc.text(value || 'Не указано');
+        doc.fillColor(this.colors.text);
+      }
+    });
+    
+    doc.moveDown(1);
+  }
+
+  /**
+   * Добавляет диаграмму в документ (заглушка - в реальном проекте нужна библиотека для рисования)
+   * @param {PDFDocument} doc - Экземпляр PDFDocument
+   * @param {string} title - Заголовок диаграммы
+   * @param {Object} data - Данные для диаграммы
+   * @param {string} type - Тип диаграммы (pie, bar, line)
+   * @param {Object} options - Опции диаграммы
+   */
+  addChart(doc, title, data, type = 'pie', options = {}) {
+    // Заголовок диаграммы
+    doc.font('Bold').fontSize(14).fillColor(this.colors.primary);
+    doc.text(title, { align: 'center' });
+    doc.moveDown(0.5);
+    
+    // В реальном проекте здесь должен быть код для рисования диаграммы
+    // Например, с использованием библиотеки chart.js-node
+    
+    // Заглушка - просто рисуем рамку для диаграммы
+    const chartWidth = 400;
+    const chartHeight = 300;
+    const x = (doc.page.width - chartWidth) / 2;
+    
+    doc.rect(x, doc.y, chartWidth, chartHeight)
+       .strokeColor(this.colors.border)
+       .lineWidth(1)
+       .stroke();
+    
+    // Текст-заглушка
+    doc.font('Italic').fontSize(12).fillColor(this.colors.secondary);
+    doc.text(
+      `Здесь будет ${type}-диаграмма с данными`,
+      x + 20,
+      doc.y - chartHeight + 140,
+      { align: 'center', width: chartWidth - 40 }
+    );
+    
+    // Обновляем позицию курсора
+    doc.y += chartHeight + 20;
+    
+    return doc;
+  }
+
+  /**
+   * Генерирует отчет по инцидентам
+   * @param {Array<Object>} incidents - Список инцидентов
+   * @param {Object} options - Опции отчета
+   * @returns {Promise<string>} Путь к сгенерированному файлу
+   */
+  async generateIncidentReport(incidents, options = {}) {
+    try {
+      const filePath = this.generateFileName('incident_report');
+      const doc = this.createDocument();
+      const stream = fs.createWriteStream(filePath);
+      
+      // Настраиваем поток
+      doc.pipe(stream);
+      
+      // Добавляем заголовок
+      this.addHeader(doc, 'Отчет по инцидентам', options.subtitle || 'IT Service Desk');
+      
+      // Добавляем описание отчета
+      if (options.description) {
+        doc.font('Regular').fontSize(12).fillColor(this.colors.text);
+        doc.text(options.description);
+        doc.moveDown(1);
+      }
+      
+      // Статистика
+      if (options.showStatistics) {
+        const statusCounts = {
+          open: incidents.filter(i => i.status === 'open').length,
+          in_progress: incidents.filter(i => i.status === 'in_progress').length,
+          resolved: incidents.filter(i => i.status === 'resolved').length,
+          closed: incidents.filter(i => i.status === 'closed').length
+        };
+        
+        const priorityCounts = {
+          high: incidents.filter(i => i.priority === 'high').length,
+          medium: incidents.filter(i => i.priority === 'medium').length,
+          low: incidents.filter(i => i.priority === 'low').length
+        };
+        
+        // Добавляем статистику
+        doc.font('Bold').fontSize(14).fillColor(this.colors.primary);
+        doc.text('Статистика по инцидентам');
+        doc.moveDown(0.5);
+        
+        // Таблица со статистикой по статусам
+        const statusHeaders = ['Статус', 'Количество', 'Процент'];
+        const statusData = [
+          ['Открыт', statusCounts.open, `${Math.round(statusCounts.open / incidents.length * 100)}%`],
+          ['В работе', statusCounts.in_progress, `${Math.round(statusCounts.in_progress / incidents.length * 100)}%`],
+          ['Решен', statusCounts.resolved, `${Math.round(statusCounts.resolved / incidents.length * 100)}%`],
+          ['Закрыт', statusCounts.closed, `${Math.round(statusCounts.closed / incidents.length * 100)}%`],
+          ['Всего', incidents.length, '100%']
+        ];
+        
+        this.addTable(doc, statusHeaders, statusData, {
+          columnWidths: [150, 100, 100]
+        });
+        
+        doc.moveDown(1);
+        
+        // Таблица со статистикой по приоритетам
+        const priorityHeaders = ['Приоритет', 'Количество', 'Процент'];
+        const priorityData = [
+          ['Высокий', priorityCounts.high, `${Math.round(priorityCounts.high / incidents.length * 100)}%`],
+          ['Средний', priorityCounts.medium, `${Math.round(priorityCounts.medium / incidents.length * 100)}%`],
+          ['Низкий', priorityCounts.low, `${Math.round(priorityCounts.low / incidents.length * 100)}%`],
+          ['Всего', incidents.length, '100%']
+        ];
+        
+        this.addTable(doc, priorityHeaders, priorityData, {
+          columnWidths: [150, 100, 100]
+        });
+        
+        doc.moveDown(2);
+      }
+      
+      // Список инцидентов
+      doc.font('Bold').fontSize(14).fillColor(this.colors.primary);
+      doc.text('Список инцидентов');
+      doc.moveDown(0.5);
+      
+      // Заголовки таблицы
+      const headers = ['ID', 'Заголовок', 'Статус', 'Приоритет', 'Создан', 'Обновлен'];
+      
+      // Данные таблицы
+      const data = incidents.map(incident => [
+        incident._id.toString().substring(0, 8),
+        incident.title,
+        incident.status,
+        incident.priority,
+        format(new Date(incident.createdAt), 'dd.MM.yyyy'),
+        format(new Date(incident.updatedAt), 'dd.MM.yyyy')
+      ]);
+      
+      // Добавляем таблицу
+      this.addTable(doc, headers, data, {
+        columnWidths: [60, 150, 80, 80, 80, 80]
+      });
+      
+      // Если нужно, добавляем детали по каждому инциденту
+      if (options.showDetails && incidents.length > 0) {
+        doc.addPage();
+        
+        doc.font('Bold').fontSize(16).fillColor(this.colors.primary);
+        doc.text('Детали инцидентов');
+        doc.moveDown(1);
+        
+        incidents.forEach((incident, index) => {
+          // Если не первый инцидент, добавляем разрыв страницы
+          if (index > 0) {
+            doc.addPage();
+          }
+          
+          // Поля для отображения
+          const fields = [
+            { key: '_id', label: 'ID инцидента', type: 'string' },
+            { key: 'title', label: 'Заголовок', type: 'string' },
+            { key: 'description', label: 'Описание', type: 'string' },
+            { key: 'status', label: 'Статус', type: 'status' },
+            { key: 'priority', label: 'Приоритет', type: 'priority' },
+            { key: 'assignedTo', label: 'Назначен', type: 'string' },
+            { key: 'createdBy', label: 'Создан пользователем', type: 'string' },
+            { key: 'createdAt', label: 'Дата создания', type: 'date' },
+            { key: 'updatedAt', label: 'Дата обновления', type: 'date' },
+            { key: 'resolvedAt', label: 'Дата решения', type: 'date' },
+            { key: 'closedAt', label: 'Дата закрытия', type: 'date' }
+          ];
+          
+          this.addEntitySection(doc, `Инцидент #${index + 1}`, incident, fields);
+          
+          // Если есть комментарии, добавляем их
+          if (incident.comments && incident.comments.length > 0) {
+            doc.font('Bold').fontSize(14).fillColor(this.colors.primary);
+            doc.text('Комментарии');
+            doc.moveDown(0.5);
+            
+            incident.comments.forEach((comment, commentIndex) => {
+              doc.font('Bold').fontSize(12).fillColor(this.colors.secondary);
+              doc.text(`Комментарий #${commentIndex + 1} от ${format(new Date(comment.createdAt), 'dd.MM.yyyy HH:mm')}`);
+              doc.font('Regular').fillColor(this.colors.text);
+              doc.text(comment.text);
+              doc.moveDown(0.5);
+            });
+          }
+        });
+      }
+      
+      // Добавляем нижний колонтитул
+      this.addFooter(doc);
+      
+      // Завершаем документ
+      doc.end();
+      
+      // Ожидаем завершения записи
+      return new Promise((resolve, reject) => {
+        stream.on('finish', () => resolve(filePath));
+        stream.on('error', reject);
+      });
+    } catch (error) {
+      logger.error('Error generating incident report:', error);
+      throw new Error('Failed to generate incident report');
+    }
+  }
+
+  /**
+   * Генерирует отчет по оборудованию
+   * @param {Array<Object>} equipment - Список оборудования
+   * @param {Object} options - Опции отчета
+   * @returns {Promise<string>} Путь к сгенерированному файлу
+   */
+  async generateEquipmentReport(equipment, options = {}) {
+    try {
+      const filePath = this.generateFileName('equipment_report');
+      const doc = this.createDocument();
+      const stream = fs.createWriteStream(filePath);
+      
+      // Настраиваем поток
+      doc.pipe(stream);
+      
+      // Добавляем заголовок
+      this.addHeader(doc, 'Отчет по оборудованию', options.subtitle || 'IT Service Desk');
+      
+      // Добавляем описание отчета
+      if (options.description) {
+        doc.font('Regular').fontSize(12).fillColor(this.colors.text);
+        doc.text(options.description);
+        doc.moveDown(1);
+      }
+      
+      // Статистика
+      if (options.showStatistics) {
+        const statusCounts = {
+          active: equipment.filter(e => e.status === 'active').length,
+          maintenance: equipment.filter(e => e.status === 'maintenance').length,
+          repair: equipment.filter(e => e.status === 'repair').length,
+          retired: equipment.filter(e => e.status === 'retired').length
+        };
+        
+        const typeCounts = {};
+        equipment.forEach(e => {
+          typeCounts[e.type] = (typeCounts[e.type] || 0) + 1;
+        });
+        
+        // Добавляем статистику
+        doc.font('Bold').fontSize(14).fillColor(this.colors.primary);
+        doc.text('Статистика по оборудованию');
+        doc.moveDown(0.5);
+        
+        // Таблица со статистикой по статусам
+        const statusHeaders = ['Статус', 'Количество', 'Процент'];
+        const statusData = [
+          ['Активно', statusCounts.active, `${Math.round(statusCounts.active / equipment.length * 100)}%`],
+          ['Обслуживание', statusCounts.maintenance, `${Math.round(statusCounts.maintenance / equipment.length * 100)}%`],
+          ['Ремонт', statusCounts.repair, `${Math.round(statusCounts.repair / equipment.length * 100)}%`],
+          ['Списано', statusCounts.retired, `${Math.round(statusCounts.retired / equipment.length * 100)}%`],
+          ['Всего', equipment.length, '100%']
+        ];
+        
+        this.addTable(doc, statusHeaders, statusData, {
+          columnWidths: [150, 100, 100]
+        });
+        
+        doc.moveDown(1);
+        
+        // Таблица со статистикой по типам
+        const typeHeaders = ['Тип оборудования', 'Количество', 'Процент'];
+        const typeData = Object.entries(typeCounts).map(([type, count]) => [
+          type,
+          count,
+          `${Math.round(count / equipment.length * 100)}%`
+        ]);
+        
+        // Добавляем строку "Всего"
+        typeData.push(['Всего', equipment.length, '100%']);
+        
+        this.addTable(doc, typeHeaders, typeData, {
+          columnWidths: [150, 100, 100]
+        });
+        
+        doc.moveDown(2);
+      }
+      
+      // Список оборудования
+      doc.font('Bold').fontSize(14).fillColor(this.colors.primary);
+      doc.text('Список оборудования');
+      doc.moveDown(0.5);
+      
+      // Заголовки таблицы
+      const headers = ['ID', 'Наименование', 'Тип', 'Статус', 'Инвентарный №', 'Местоположение'];
+      
+      // Данные таблицы
+      const data = equipment.map(item => [
+        item._id.toString().substring(0, 8),
+        item.name,
+        item.type,
+        item.status,
+        item.inventoryNumber || 'Н/Д',
+        item.location || 'Н/Д'
+      ]);
+      
+      // Добавляем таблицу
+      this.addTable(doc, headers, data, {
+        columnWidths: [60, 120, 80, 80, 100, 100]
+      });
+      
+      // Если нужно, добавляем детали по каждому оборудованию
+      if (options.showDetails && equipment.length > 0) {
+        doc.addPage();
+        
+        doc.font('Bold').fontSize(16).fillColor(this.colors.primary);
+        doc.text('Детали оборудования');
+        doc.moveDown(1);
+        
+        equipment.forEach((item, index) => {
+          // Если не первый элемент и не помещается на текущей странице, добавляем разрыв страницы
+          if (index > 0 && doc.y > doc.page.height - 300) {
+            doc.addPage();
+          }
+          
+          // Поля для отображения
+          const fields = [
+            { key: '_id', label: 'ID оборудования', type: 'string' },
+            { key: 'name', label: 'Наименование', type: 'string' },
+            { key: 'type', label: 'Тип', type: 'string' },
+            { key: 'model', label: 'Модель', type: 'string' },
+            { key: 'manufacturer', label: 'Производитель', type: 'string' },
+            { key: 'serialNumber', label: 'Серийный номер', type: 'string' },
+            { key: 'inventoryNumber', label: 'Инвентарный номер', type: 'string' },
+            { key: 'status', label: 'Статус', type: 'string' },
+            { key: 'location', label: 'Местоположение', type: 'string' },
+            { key: 'assignedTo', label: 'Назначен пользователю', type: 'string' },
+            { key: 'purchaseDate', label: 'Дата приобретения', type: 'date' },
+            { key: 'warrantyExpiration', label: 'Окончание гарантии', type: 'date' },
+            { key: 'lastMaintenanceDate', label: 'Дата последнего обслуживания', type: 'date' },
+            { key: 'nextMaintenanceDate', label: 'Дата следующего обслуживания', type: 'date' },
+            { key: 'notes', label: 'Примечания', type: 'string' }
+          ];
+          
+          this.addEntitySection(doc, `Оборудование #${index + 1}: ${item.name}`, item, fields);
+          
+          // Если есть история обслуживания, добавляем ее
+          if (item.maintenanceHistory && item.maintenanceHistory.length > 0) {
+            doc.font('Bold').fontSize(14).fillColor(this.colors.primary);
+            doc.text('История обслуживания');
+            doc.moveDown(0.5);
+            
+            const maintenanceHeaders = ['Дата', 'Тип', 'Описание', 'Выполнил'];
+            const maintenanceData = item.maintenanceHistory.map(record => [
+              format(new Date(record.date), 'dd.MM.yyyy'),
+              record.type,
+              record.description,
+              record.performedBy
+            ]);
+            
+            this.addTable(doc, maintenanceHeaders, maintenanceData, {
+              columnWidths: [80, 100, 200, 100]
+            });
+            
+            doc.moveDown(1);
+          }
+        });
+      }
+      
+      // Добавляем нижний колонтитул
+      this.addFooter(doc);
+      
+      // Завершаем документ
+      doc.end();
+      
+      // Ожидаем завершения записи
+      return new Promise((resolve, reject) => {
+        stream.on('finish', () => resolve(filePath));
+        stream.on('error', reject);
+      });
+    } catch (error) {
+      logger.error('Error generating equipment report:', error);
+      throw new Error('Failed to generate equipment report');
+    }
+  }
+
+  /**
+   * Генерирует сводный отчет по работе IT Service Desk
+   * @param {Object} data - Данные для отчета
+   * @param {Object} options - Опции отчета
+   * @returns {Promise<string>} Путь к сгенерированному файлу
+   */
+  async generateSummaryReport(data, options = {}) {
+    try {
+      const filePath = this.generateFileName('summary_report');
+      const doc = this.createDocument();
+      const stream = fs.createWriteStream(filePath);
+      
+      // Настраиваем поток
+      doc.pipe(stream);
+      
+      // Добавляем заголовок
+      this.addHeader(doc, 'Сводный отчет IT Service Desk', options.period || 'За все время');
+      
+      // Добавляем описание отчета
+      if (options.description) {
+        doc.font('Regular').fontSize(12).fillColor(this.colors.text);
+        doc.text(options.description);
+        doc.moveDown(1);
+      }
+      
+      // Общая статистика
+      doc.font('Bold').fontSize(16).fillColor(this.colors.primary);
+      doc.text('Общая статистика');
+      doc.moveDown(0.5);
+      
+      // Таблица с общей статистикой
+      const summaryHeaders = ['Показатель', 'Значение'];
+      const summaryData = [
+        ['Всего инцидентов', data.totalIncidents],
+        ['Открытые инциденты', data.openIncidents],
+        ['Решенные инциденты', data.resolvedIncidents],
+        ['Закрытые инциденты', data.closedIncidents],
+        ['Среднее время решения (часы)', data.avgResolutionTime],
+        ['Всего оборудования', data.totalEquipment],
+        ['Активное оборудование', data.activeEquipment],
+        ['Оборудование в ремонте', data.equipmentInRepair],
+        ['Всего пользователей', data.totalUsers]
+      ];
+      
+      this.addTable(doc, summaryHeaders, summaryData, {
+        columnWidths: [300, 150]
+      });
+      
+      doc.moveDown(2);
+      
+      // Статистика по инцидентам
+      doc.font('Bold').fontSize(16).fillColor(this.colors.primary);
+      doc.text('Статистика по инцидентам');
+      doc.moveDown(0.5);
+      
+      // Добавляем диаграмму статусов инцидентов
+      this.addChart(doc, 'Распределение инцидентов по статусам', {
+        labels: ['Открыт', 'В работе', 'Решен', 'Закрыт'],
+        data: [data.openIncidents, data.inProgressIncidents, data.resolvedIncidents, data.closedIncidents]
+      }, 'pie');
+      
+      doc.moveDown(1);
+      
+      // Добавляем диаграмму приоритетов инцидентов
+      this.addChart(doc, 'Распределение инцидентов по приоритетам', {
+        labels: ['Высокий', 'Средний', 'Низкий'],
+        data: [data.highPriorityIncidents, data.mediumPriorityIncidents, data.lowPriorityIncidents]
+      }, 'pie');
+      
+      doc.moveDown(1);
+      
+      // Добавляем диаграмму динамики инцидентов
+      if (data.incidentTrend && data.incidentTrend.length > 0) {
+        this.addChart(doc, 'Динамика инцидентов по месяцам', {
+          labels: data.incidentTrend.map(item => item.month),
+          data: data.incidentTrend.map(item => item.count)
+        }, 'line');
+        
+        doc.moveDown(1);
+      }
+      
+      // Добавляем новую страницу
+      doc.addPage();
+      
+      // Топ категорий инцидентов
+      if (data.topIncidentCategories && data.topIncidentCategories.length > 0) {
+        doc.font('Bold').fontSize(14).fillColor(this.colors.primary);
+        doc.text('Топ категорий инцидентов');
+        doc.moveDown(0.5);
+        
+        const categoryHeaders = ['Категория', 'Количество', 'Процент'];
+        const categoryData = data.topIncidentCategories.map(category => [
+          category.name,
+          category.count,
+          `${Math.round(category.count / data.totalIncidents * 100)}%`
+        ]);
+        
+        this.addTable(doc, categoryHeaders, categoryData, {
+          columnWidths: [250, 100, 100]
+        });
+        
+        doc.moveDown(2);
+      }
+      
+      // Статистика по оборудованию
+      doc.font('Bold').fontSize(16).fillColor(this.colors.primary);
+      doc.text('Статистика по оборудованию');
+      doc.moveDown(0.5);
+      
+      // Добавляем диаграмму статусов оборудования
+      this.addChart(doc, 'Распределение оборудования по статусам', {
+        labels: ['Активно', 'Обслуживание', 'Ремонт', 'Списано'],
+        data: [data.activeEquipment, data.maintenanceEquipment, data.equipmentInRepair, data.retiredEquipment]
+      }, 'pie');
+      
+      doc.moveDown(1);
+      
+      // Топ типов оборудования
+      if (data.topEquipmentTypes && data.topEquipmentTypes.length > 0) {
+        doc.font('Bold').fontSize(14).fillColor(this.colors.primary);
+        doc.text('Распределение оборудования по типам');
+        doc.moveDown(0.5);
+        
+        const typeHeaders = ['Тип оборудования', 'Количество', 'Процент'];
+        const typeData = data.topEquipmentTypes.map(type => [
+          type.name,
+          type.count,
+          `${Math.round(type.count / data.totalEquipment * 100)}%`
+        ]);
+        
+        this.addTable(doc, typeHeaders, typeData, {
+          columnWidths: [250, 100, 100]
+        });
+        
+        doc.moveDown(2);
+      }
+      
+      // Показатели эффективности
+      doc.font('Bold').fontSize(16).fillColor(this.colors.primary);
+      doc.text('Показатели эффективности');
+      doc.moveDown(0.5);
+      
+      const kpiHeaders = ['Показатель', 'Значение', 'Целевое значение', 'Статус'];
+      const kpiData = [
+        [
+          'Среднее время решения (часы)',
+          data.avgResolutionTime,
+          data.targetResolutionTime,
+          data.avgResolutionTime <= data.targetResolutionTime ? 'Достигнуто' : 'Не достигнуто'
+        ],
+        [
+          'Процент решенных инцидентов',
+          `${Math.round((data.resolvedIncidents + data.closedIncidents) / data.totalIncidents * 100)}%`,
+          `${data.targetResolutionPercentage}%`,
+          (data.resolvedIncidents + data.closedIncidents) / data.totalIncidents * 100 >= data.targetResolutionPercentage ? 'Достигнуто' : 'Не достигнуто'
+        ],
+        [
+          'Процент инцидентов, решенных с первого обращения',
+          `${data.firstContactResolutionRate}%`,
+          `${data.targetFirstContactResolution}%`,
+          data.firstContactResolutionRate >= data.targetFirstContactResolution ? 'Достигнуто' : 'Не достигнуто'
+        ],
+        [
+          'Удовлетворенность пользователей',
+          `${data.userSatisfactionRate}%`,
+          `${data.targetUserSatisfaction}%`,
+          data.userSatisfactionRate >= data.targetUserSatisfaction ? 'Достигнуто' : 'Не достигнуто'
+        ]
+      ];
+      
+      this.addTable(doc, kpiHeaders, kpiData, {
+        columnWidths: [200, 100, 100, 100]
+      });
+      
+      doc.moveDown(2);
+      
+      // Рекомендации
+      if (options.includeRecommendations && data.recommendations && data.recommendations.length > 0) {
+        doc.font('Bold').fontSize(16).fillColor(this.colors.primary);
+        doc.text('Рекомендации');
+        doc.moveDown(0.5);
+        
+        data.recommendations.forEach((recommendation, index) => {
+          doc.font('Bold').fontSize(12).fillColor(this.colors.secondary);
+          doc.text(`${index + 1}. ${recommendation.title}`);
+          doc.font('Regular').fontSize(12).fillColor(this.colors.text);
+          doc.text(recommendation.description);
+          doc.moveDown(0.5);
+        });
+      }
+      
+      // Добавляем нижний колонтитул
+      this.addFooter(doc);
+      
+      // Завершаем документ
+      doc.end();
+      
+      // Ожидаем завершения записи
+      return new Promise((resolve, reject) => {
+        stream.on('finish', () => resolve(filePath));
+        stream.on('error', reject);
+      });
+    } catch (error) {
+      logger.error('Error generating summary report:', error);
+      throw new Error('Failed to generate summary report');
+    }
+  }
+
+  /**
+   * Удаляет временный файл после его использования
+   * @param {string} filePath - Путь к файлу
+   * @returns {Promise<void>}
+   */
+  async cleanupTempFile(filePath) {
+    try {
+      if (fs.existsSync(filePath)) {
+        await fs.promises.unlink(filePath);
+        logger.debug(`Temporary file removed: ${filePath}`);
+      }
+    } catch (error) {
+      logger.warn(`Failed to remove temporary file ${filePath}:`, error);
+    }
+  }
+}
+
+module.exports = new PDFService();

@@ -1,0 +1,139 @@
+/**
+ * Глобальный обработчик ошибок для Express приложения
+ * Обрабатывает все типы ошибок и отправляет соответствующий HTTP-ответ
+ * 
+ * @module middleware/error.handler
+ */
+const winston = require('winston');
+const logger = require('../config/winston');
+const constants = require('../utils/constants');
+
+/**
+ * Класс для создания пользовательских ошибок с HTTP статусом
+ */
+class AppError extends Error {
+  constructor(message, statusCode) {
+    super(message);
+    this.statusCode = statusCode;
+    this.name = this.constructor.name;
+    Error.captureStackTrace(this, this.constructor);
+  }
+}
+
+/**
+ * Глобальный обработчик ошибок
+ * @param {Error} err - Объект ошибки
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {Function} next - Express next middleware function
+ */
+const errorHandler = (err, req, res, next) => {
+  // Логирование ошибки
+  logger.error(`${err.name || 'Error'}: ${err.message}`, { 
+    metadata: {
+      path: req.path,
+      method: req.method,
+      ip: req.ip,
+      userId: req.user ? req.user.id : 'unauthenticated',
+      stack: err.stack
+    }
+  });
+  
+  // Определяем тип ошибки и соответствующий статус
+  let statusCode = err.statusCode || constants.HTTP_STATUS.INTERNAL_SERVER_ERROR;
+  let message = err.message || 'Внутренняя ошибка сервера';
+  let errorDetails = err.details || null;
+  
+  // Обработка различных типов ошибок
+  if (err.name === 'ValidationError') {
+    statusCode = constants.HTTP_STATUS.BAD_REQUEST;
+    
+    // Обработка ошибок валидации Joi
+    if (err.details && Array.isArray(err.details)) {
+      errorDetails = err.details.map(detail => ({
+        message: detail.message,
+        path: detail.path,
+        type: detail.type
+      }));
+    } 
+    // Обработка ошибок валидации Mongoose
+    else if (err.errors) {
+      errorDetails = Object.keys(err.errors).reduce((result, key) => {
+        result[key] = err.errors[key].message;
+        return result;
+      }, {});
+    }
+  } else if (err.name === 'CastError') {
+    statusCode = constants.HTTP_STATUS.BAD_REQUEST;
+    message = `Неверный формат данных для поля ${err.path}: ${err.value}`;
+  } else if (err.name === 'MongoServerError' && err.code === 11000) {
+    statusCode = constants.HTTP_STATUS.CONFLICT;
+    const field = Object.keys(err.keyValue)[0];
+    message = `Запись с ${field} '${err.keyValue[field]}' уже существует`;
+  } else if (err.name === 'JsonWebTokenError') {
+    statusCode = constants.HTTP_STATUS.UNAUTHORIZED;
+    message = 'Недействительный токен авторизации';
+  } else if (err.name === 'TokenExpiredError') {
+    statusCode = constants.HTTP_STATUS.UNAUTHORIZED;
+    message = 'Срок действия токена истек';
+  } else if (err.name === 'UnauthorizedError' || err.name === 'AuthenticationError') {
+    statusCode = constants.HTTP_STATUS.UNAUTHORIZED;
+    message = err.message || 'Ошибка авторизации';
+  } else if (err.name === 'ForbiddenError') {
+    statusCode = constants.HTTP_STATUS.FORBIDDEN;
+    message = err.message || 'Доступ запрещен';
+  } else if (err.name === 'NotFoundError') {
+    statusCode = constants.HTTP_STATUS.NOT_FOUND;
+    message = err.message || 'Ресурс не найден';
+  }
+  
+  // Формирование ответа
+  const errorResponse = {
+    success: false,
+    error: {
+      message,
+      code: statusCode,
+      ...(errorDetails && { details: errorDetails })
+    }
+  };
+
+  // В режиме разработки добавляем стек ошибки
+  if (process.env.NODE_ENV === 'development') {
+    errorResponse.error.stack = err.stack;
+  }
+  
+  // Отправка ответа клиенту
+  res.status(statusCode).json(errorResponse);
+};
+
+/**
+ * Middleware для обработки ошибок 404 (Not Found)
+ * Вызывается, когда не найден обработчик для запрошенного маршрута
+ * 
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {Function} next - Express next middleware function
+ */
+const notFoundHandler = (req, res, next) => {
+  const error = new AppError(`Маршрут ${req.originalUrl} не найден`, constants.HTTP_STATUS.NOT_FOUND);
+  error.name = 'NotFoundError';
+  next(error);
+};
+
+/**
+ * Асинхронный обработчик ошибок для маршрутов
+ * Оборачивает асинхронные обработчики маршрутов для корректной обработки ошибок
+ * 
+ * @param {Function} fn - Асинхронная функция-обработчик маршрута
+ * @returns {Function} Middleware функция с обработкой ошибок
+ */
+const asyncHandler = (fn) => (req, res, next) => {
+  Promise.resolve(fn(req, res, next)).catch(next);
+};
+
+module.exports = {
+  errorHandler,
+  notFoundHandler,
+  asyncHandler,
+  AppError
+};

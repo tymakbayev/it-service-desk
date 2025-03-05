@@ -1,0 +1,222 @@
+/**
+ * IT Service Desk - Notification Routes
+ * 
+ * This file defines all notification-related routes for the application.
+ * It handles notification creation, retrieval, marking as read, and other notification operations.
+ */
+const express = require('express');
+const router = express.Router();
+const notificationController = require('../controllers/notification.controller');
+const authMiddleware = require('../middleware/auth.middleware');
+const roleMiddleware = require('../middleware/role.middleware');
+const { check, param, query } = require('express-validator');
+const validationMiddleware = require('../middleware/validation.middleware');
+
+/**
+ * @route   GET /api/notifications
+ * @desc    Get all notifications for the authenticated user
+ * @access  Private
+ */
+router.get(
+  '/',
+  authMiddleware,
+  [
+    query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be between 1 and 100'),
+    query('offset').optional().isInt({ min: 0 }).withMessage('Offset must be a non-negative integer'),
+    query('status').optional().isIn(['UNREAD', 'READ', 'ARCHIVED', 'ALL']).withMessage('Invalid status value'),
+    query('type').optional().isIn(['SYSTEM', 'INCIDENT', 'EQUIPMENT', 'USER', 'REPORT', 'ALERT']).withMessage('Invalid notification type'),
+    query('sortBy').optional().isIn(['createdAt', 'priority', 'type']).withMessage('Invalid sort field'),
+    query('sortOrder').optional().isIn(['asc', 'desc']).withMessage('Sort order must be asc or desc')
+  ],
+  validationMiddleware,
+  notificationController.getUserNotifications
+);
+
+/**
+ * @route   GET /api/notifications/unread-count
+ * @desc    Get count of unread notifications for the authenticated user
+ * @access  Private
+ */
+router.get(
+  '/unread-count',
+  authMiddleware,
+  notificationController.getUnreadCount
+);
+
+/**
+ * @route   GET /api/notifications/:id
+ * @desc    Get a specific notification by ID
+ * @access  Private
+ */
+router.get(
+  '/:id',
+  authMiddleware,
+  [
+    param('id').isMongoId().withMessage('Invalid notification ID format')
+  ],
+  validationMiddleware,
+  notificationController.getNotificationById
+);
+
+/**
+ * @route   POST /api/notifications
+ * @desc    Create a new notification (admin only)
+ * @access  Private/Admin
+ */
+router.post(
+  '/',
+  authMiddleware,
+  roleMiddleware(['ADMIN', 'MANAGER']),
+  [
+    check('title').notEmpty().withMessage('Title is required').isLength({ max: 100 }).withMessage('Title cannot exceed 100 characters'),
+    check('message').notEmpty().withMessage('Message is required').isLength({ max: 500 }).withMessage('Message cannot exceed 500 characters'),
+    check('type').isIn(['SYSTEM', 'INCIDENT', 'EQUIPMENT', 'USER', 'REPORT', 'ALERT']).withMessage('Invalid notification type'),
+    check('priority').optional().isIn(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']).withMessage('Invalid priority level'),
+    check('recipient').isMongoId().withMessage('Valid recipient ID is required'),
+    check('relatedEntity.entityType').optional().isIn(['INCIDENT', 'EQUIPMENT', 'USER', 'REPORT']).withMessage('Invalid entity type'),
+    check('relatedEntity.entityId').optional().isMongoId().withMessage('Invalid entity ID format'),
+    check('deliveryMethod').optional().isIn(['IN_APP', 'EMAIL', 'SMS', 'PUSH']).withMessage('Invalid delivery method')
+  ],
+  validationMiddleware,
+  notificationController.createNotification
+);
+
+/**
+ * @route   POST /api/notifications/broadcast
+ * @desc    Broadcast a notification to multiple users or all users (admin only)
+ * @access  Private/Admin
+ */
+router.post(
+  '/broadcast',
+  authMiddleware,
+  roleMiddleware(['ADMIN']),
+  [
+    check('title').notEmpty().withMessage('Title is required').isLength({ max: 100 }).withMessage('Title cannot exceed 100 characters'),
+    check('message').notEmpty().withMessage('Message is required').isLength({ max: 500 }).withMessage('Message cannot exceed 500 characters'),
+    check('type').isIn(['SYSTEM', 'INCIDENT', 'EQUIPMENT', 'USER', 'REPORT', 'ALERT']).withMessage('Invalid notification type'),
+    check('priority').optional().isIn(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']).withMessage('Invalid priority level'),
+    check('recipients').optional().isArray().withMessage('Recipients must be an array of user IDs'),
+    check('recipients.*').optional().isMongoId().withMessage('Invalid recipient ID format'),
+    check('roles').optional().isArray().withMessage('Roles must be an array'),
+    check('roles.*').optional().isIn(['ADMIN', 'MANAGER', 'USER']).withMessage('Invalid role'),
+    check('allUsers').optional().isBoolean().withMessage('allUsers must be a boolean'),
+    check('deliveryMethod').optional().isIn(['IN_APP', 'EMAIL', 'SMS', 'PUSH']).withMessage('Invalid delivery method')
+  ],
+  validationMiddleware,
+  notificationController.broadcastNotification
+);
+
+/**
+ * @route   PUT /api/notifications/:id/read
+ * @desc    Mark a notification as read
+ * @access  Private
+ */
+router.put(
+  '/:id/read',
+  authMiddleware,
+  [
+    param('id').isMongoId().withMessage('Invalid notification ID format')
+  ],
+  validationMiddleware,
+  notificationController.markAsRead
+);
+
+/**
+ * @route   PUT /api/notifications/read-all
+ * @desc    Mark all notifications as read for the authenticated user
+ * @access  Private
+ */
+router.put(
+  '/read-all',
+  authMiddleware,
+  notificationController.markAllAsRead
+);
+
+/**
+ * @route   PUT /api/notifications/:id/archive
+ * @desc    Archive a notification
+ * @access  Private
+ */
+router.put(
+  '/:id/archive',
+  authMiddleware,
+  [
+    param('id').isMongoId().withMessage('Invalid notification ID format')
+  ],
+  validationMiddleware,
+  notificationController.archiveNotification
+);
+
+/**
+ * @route   PUT /api/notifications/archive-all
+ * @desc    Archive all read notifications for the authenticated user
+ * @access  Private
+ */
+router.put(
+  '/archive-all',
+  authMiddleware,
+  notificationController.archiveAllRead
+);
+
+/**
+ * @route   DELETE /api/notifications/:id
+ * @desc    Delete a notification
+ * @access  Private
+ */
+router.delete(
+  '/:id',
+  authMiddleware,
+  [
+    param('id').isMongoId().withMessage('Invalid notification ID format')
+  ],
+  validationMiddleware,
+  notificationController.deleteNotification
+);
+
+/**
+ * @route   DELETE /api/notifications/clear-all
+ * @desc    Clear all notifications for the authenticated user
+ * @access  Private
+ */
+router.delete(
+  '/clear-all',
+  authMiddleware,
+  notificationController.clearAllNotifications
+);
+
+/**
+ * @route   GET /api/notifications/settings
+ * @desc    Get notification settings for the authenticated user
+ * @access  Private
+ */
+router.get(
+  '/settings',
+  authMiddleware,
+  notificationController.getNotificationSettings
+);
+
+/**
+ * @route   PUT /api/notifications/settings
+ * @desc    Update notification settings for the authenticated user
+ * @access  Private
+ */
+router.put(
+  '/settings',
+  authMiddleware,
+  [
+    check('emailNotifications').optional().isBoolean().withMessage('emailNotifications must be a boolean'),
+    check('pushNotifications').optional().isBoolean().withMessage('pushNotifications must be a boolean'),
+    check('smsNotifications').optional().isBoolean().withMessage('smsNotifications must be a boolean'),
+    check('notificationTypes').optional().isObject().withMessage('notificationTypes must be an object'),
+    check('notificationTypes.SYSTEM').optional().isBoolean(),
+    check('notificationTypes.INCIDENT').optional().isBoolean(),
+    check('notificationTypes.EQUIPMENT').optional().isBoolean(),
+    check('notificationTypes.USER').optional().isBoolean(),
+    check('notificationTypes.REPORT').optional().isBoolean(),
+    check('notificationTypes.ALERT').optional().isBoolean()
+  ],
+  validationMiddleware,
+  notificationController.updateNotificationSettings
+);
+
+module.exports = router;

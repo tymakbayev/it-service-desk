@@ -1,0 +1,743 @@
+/**
+ * Notification Service
+ * 
+ * Сервис для управления уведомлениями в системе IT Service Desk.
+ * Обеспечивает создание, получение, обновление и отправку уведомлений
+ * через различные каналы (in-app, email, WebSocket).
+ */
+const NotificationModel = require('../models/notification.model');
+const UserModel = require('../models/user.model');
+const WebSocketService = require('./websocket.service');
+const EmailService = require('./email.service');
+const config = require('../config/config');
+const logger = require('../config/winston');
+
+class NotificationService {
+  /**
+   * Создает и отправляет новое уведомление
+   * 
+   * @param {Object} notificationData - Данные уведомления
+   * @param {string} notificationData.title - Заголовок уведомления
+   * @param {string} notificationData.message - Текст уведомления
+   * @param {string} notificationData.type - Тип уведомления (SYSTEM, INCIDENT, EQUIPMENT, USER, REPORT, ALERT)
+   * @param {string} notificationData.priority - Приоритет (LOW, MEDIUM, HIGH, CRITICAL)
+   * @param {string} notificationData.recipient - ID пользователя-получателя
+   * @param {string} [notificationData.sender] - ID пользователя-отправителя (если есть)
+   * @param {Object} [notificationData.relatedEntity] - Связанная сущность
+   * @param {string} [notificationData.link] - Ссылка для перехода
+   * @param {string[]} [notificationData.deliveryMethods] - Методы доставки ['IN_APP', 'EMAIL', 'PUSH']
+   * @returns {Promise<Object>} Созданное уведомление
+   */
+  async createNotification(notificationData) {
+    try {
+      // Проверяем существование получателя
+      const recipient = await UserModel.findById(notificationData.recipient);
+      if (!recipient) {
+        throw new Error(`Recipient with ID ${notificationData.recipient} not found`);
+      }
+
+      // Устанавливаем значения по умолчанию
+      const notification = new NotificationModel({
+        title: notificationData.title,
+        message: notificationData.message,
+        type: notificationData.type || 'SYSTEM',
+        priority: notificationData.priority || 'MEDIUM',
+        recipient: notificationData.recipient,
+        sender: notificationData.sender || null,
+        isSystemGenerated: !notificationData.sender,
+        status: 'UNREAD',
+        relatedEntity: notificationData.relatedEntity || { entityType: null, entityId: null },
+        link: notificationData.link || null,
+        deliveryMethod: notificationData.deliveryMethod || 'IN_APP',
+        metadata: notificationData.metadata || {},
+        actions: notificationData.actions || []
+      });
+
+      // Сохраняем уведомление в базе данных
+      const savedNotification = await notification.save();
+      logger.info(`Notification created: ${savedNotification._id} for user ${notification.recipient}`);
+
+      // Отправляем уведомление через WebSocket, если пользователь онлайн
+      this.deliverNotification(savedNotification, notificationData.deliveryMethods || ['IN_APP']);
+
+      return savedNotification;
+    } catch (error) {
+      logger.error(`Error creating notification: ${error.message}`, { error });
+      throw error;
+    }
+  }
+
+  /**
+   * Доставляет уведомление через указанные каналы
+   * 
+   * @param {Object} notification - Объект уведомления
+   * @param {Array<string>} methods - Методы доставки ['IN_APP', 'EMAIL', 'PUSH', 'SMS']
+   * @returns {Promise<void>}
+   */
+  async deliverNotification(notification, methods = ['IN_APP']) {
+    try {
+      const deliveryPromises = [];
+      const updates = { deliveryStatus: 'DELIVERED' };
+
+      // Получаем данные пользователя для персонализации уведомлений
+      const user = await UserModel.findById(notification.recipient);
+      if (!user) {
+        throw new Error(`User not found for notification delivery: ${notification.recipient}`);
+      }
+
+      // Отправка через разные каналы
+      if (methods.includes('IN_APP')) {
+        // Отправка через WebSocket, если пользователь онлайн
+        const delivered = WebSocketService.sendToUser(
+          notification.recipient.toString(),
+          'notification',
+          notification
+        );
+        
+        if (delivered) {
+          logger.info(`WebSocket notification delivered to user ${notification.recipient}`);
+        } else {
+          logger.info(`User ${notification.recipient} is offline, notification will be shown on next login`);
+        }
+      }
+
+      if (methods.includes('EMAIL') && user.email) {
+        // Отправка email уведомления
+        deliveryPromises.push(
+          EmailService.sendNotificationEmail(user.email, {
+            subject: notification.title,
+            title: notification.title,
+            message: notification.message,
+            priority: notification.priority,
+            link: notification.link ? `${config.clientUrl}${notification.link}` : null,
+            userName: user.firstName ? `${user.firstName} ${user.lastName}` : user.username
+          }).catch(err => {
+            logger.error(`Failed to send email notification to ${user.email}`, { error: err });
+            return { success: false, method: 'EMAIL' };
+          })
+        );
+      }
+
+      if (methods.includes('PUSH') && user.pushSubscription) {
+        // Отправка push-уведомления (если настроено)
+        // Здесь может быть интеграция с сервисом push-уведомлений
+        logger.info(`Push notification would be sent to user ${notification.recipient}`);
+      }
+
+      if (methods.includes('SMS') && user.phone) {
+        // Отправка SMS (если настроено)
+        // Здесь может быть интеграция с SMS-сервисом
+        logger.info(`SMS notification would be sent to user ${notification.recipient}`);
+      }
+
+      // Ждем завершения всех отправок
+      const results = await Promise.all(deliveryPromises);
+      
+      // Обновляем статус доставки
+      const failedDeliveries = results.filter(r => !r.success);
+      if (failedDeliveries.length > 0) {
+        updates.deliveryStatus = 'FAILED';
+        updates.metadata = {
+          ...notification.metadata,
+          deliveryErrors: failedDeliveries.map(d => d.method)
+        };
+      }
+
+      // Обновляем запись в базе
+      await NotificationModel.findByIdAndUpdate(notification._id, updates);
+
+    } catch (error) {
+      logger.error(`Error delivering notification ${notification._id}:`, { error });
+      await NotificationModel.findByIdAndUpdate(notification._id, { 
+        deliveryStatus: 'FAILED',
+        metadata: {
+          ...notification.metadata,
+          error: error.message
+        }
+      });
+    }
+  }
+
+  /**
+   * Получает уведомления пользователя с пагинацией и фильтрацией
+   * 
+   * @param {string} userId - ID пользователя
+   * @param {Object} options - Параметры запроса
+   * @param {number} [options.page=1] - Номер страницы
+   * @param {number} [options.limit=10] - Количество уведомлений на странице
+   * @param {string} [options.status] - Фильтр по статусу (UNREAD, READ, ARCHIVED)
+   * @param {string} [options.type] - Фильтр по типу уведомления
+   * @param {string} [options.priority] - Фильтр по приоритету
+   * @param {boolean} [options.includeExpired=false] - Включать ли истекшие уведомления
+   * @returns {Promise<Object>} Объект с уведомлениями и метаданными
+   */
+  async getUserNotifications(userId, options = {}) {
+    try {
+      const {
+        page = 1,
+        limit = 10,
+        status,
+        type,
+        priority,
+        includeExpired = false
+      } = options;
+
+      const skip = (page - 1) * limit;
+      
+      // Формируем запрос
+      const query = { recipient: userId };
+      
+      // Добавляем фильтры, если они указаны
+      if (status) query.status = status;
+      if (type) query.type = type;
+      if (priority) query.priority = priority;
+      
+      // Исключаем истекшие уведомления, если не указано обратное
+      if (!includeExpired) {
+        query.expiresAt = { $gt: new Date() };
+      }
+
+      // Получаем уведомления с пагинацией
+      const notifications = await NotificationModel.find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate('sender', 'username firstName lastName avatar')
+        .populate('relatedEntity.entityId');
+
+      // Получаем общее количество уведомлений для пагинации
+      const total = await NotificationModel.countDocuments(query);
+      
+      // Получаем количество непрочитанных уведомлений
+      const unreadCount = await NotificationModel.countDocuments({
+        recipient: userId,
+        status: 'UNREAD',
+        expiresAt: { $gt: new Date() }
+      });
+
+      return {
+        notifications,
+        pagination: {
+          total,
+          page,
+          limit,
+          pages: Math.ceil(total / limit)
+        },
+        unreadCount
+      };
+    } catch (error) {
+      logger.error(`Error fetching notifications for user ${userId}:`, { error });
+      throw error;
+    }
+  }
+
+  /**
+   * Получает одно уведомление по ID
+   * 
+   * @param {string} notificationId - ID уведомления
+   * @param {string} userId - ID пользователя (для проверки доступа)
+   * @returns {Promise<Object>} Уведомление
+   */
+  async getNotificationById(notificationId, userId) {
+    try {
+      const notification = await NotificationModel.findById(notificationId)
+        .populate('sender', 'username firstName lastName avatar')
+        .populate('relatedEntity.entityId');
+      
+      if (!notification) {
+        throw new Error('Notification not found');
+      }
+      
+      // Проверяем, что уведомление принадлежит пользователю
+      if (notification.recipient.toString() !== userId) {
+        throw new Error('Access denied: notification belongs to another user');
+      }
+      
+      return notification;
+    } catch (error) {
+      logger.error(`Error fetching notification ${notificationId}:`, { error });
+      throw error;
+    }
+  }
+
+  /**
+   * Отмечает уведомление как прочитанное
+   * 
+   * @param {string} notificationId - ID уведомления
+   * @param {string} userId - ID пользователя (для проверки доступа)
+   * @returns {Promise<Object>} Обновленное уведомление
+   */
+  async markAsRead(notificationId, userId) {
+    try {
+      const notification = await NotificationModel.findById(notificationId);
+      
+      if (!notification) {
+        throw new Error('Notification not found');
+      }
+      
+      // Проверяем, что уведомление принадлежит пользователю
+      if (notification.recipient.toString() !== userId) {
+        throw new Error('Access denied: notification belongs to another user');
+      }
+      
+      // Если уведомление уже прочитано, возвращаем его без изменений
+      if (notification.status === 'READ') {
+        return notification;
+      }
+      
+      // Обновляем статус и время прочтения
+      notification.status = 'READ';
+      notification.readAt = new Date();
+      
+      await notification.save();
+      
+      // Отправляем обновление через WebSocket
+      WebSocketService.sendToUser(
+        userId,
+        'notification_updated',
+        { id: notification._id, status: 'READ' }
+      );
+      
+      return notification;
+    } catch (error) {
+      logger.error(`Error marking notification ${notificationId} as read:`, { error });
+      throw error;
+    }
+  }
+
+  /**
+   * Отмечает все уведомления пользователя как прочитанные
+   * 
+   * @param {string} userId - ID пользователя
+   * @returns {Promise<Object>} Результат операции
+   */
+  async markAllAsRead(userId) {
+    try {
+      const result = await NotificationModel.updateMany(
+        { recipient: userId, status: 'UNREAD' },
+        { 
+          status: 'READ',
+          readAt: new Date()
+        }
+      );
+      
+      // Отправляем обновление через WebSocket
+      WebSocketService.sendToUser(
+        userId,
+        'all_notifications_read',
+        { count: result.modifiedCount }
+      );
+      
+      return {
+        success: true,
+        modifiedCount: result.modifiedCount
+      };
+    } catch (error) {
+      logger.error(`Error marking all notifications as read for user ${userId}:`, { error });
+      throw error;
+    }
+  }
+
+  /**
+   * Архивирует уведомление
+   * 
+   * @param {string} notificationId - ID уведомления
+   * @param {string} userId - ID пользователя (для проверки доступа)
+   * @returns {Promise<Object>} Обновленное уведомление
+   */
+  async archiveNotification(notificationId, userId) {
+    try {
+      const notification = await NotificationModel.findById(notificationId);
+      
+      if (!notification) {
+        throw new Error('Notification not found');
+      }
+      
+      // Проверяем, что уведомление принадлежит пользователю
+      if (notification.recipient.toString() !== userId) {
+        throw new Error('Access denied: notification belongs to another user');
+      }
+      
+      // Обновляем статус
+      notification.status = 'ARCHIVED';
+      
+      await notification.save();
+      
+      // Отправляем обновление через WebSocket
+      WebSocketService.sendToUser(
+        userId,
+        'notification_updated',
+        { id: notification._id, status: 'ARCHIVED' }
+      );
+      
+      return notification;
+    } catch (error) {
+      logger.error(`Error archiving notification ${notificationId}:`, { error });
+      throw error;
+    }
+  }
+
+  /**
+   * Архивирует все прочитанные уведомления пользователя
+   * 
+   * @param {string} userId - ID пользователя
+   * @returns {Promise<Object>} Результат операции
+   */
+  async archiveAllRead(userId) {
+    try {
+      const result = await NotificationModel.updateMany(
+        { recipient: userId, status: 'READ' },
+        { status: 'ARCHIVED' }
+      );
+      
+      // Отправляем обновление через WebSocket
+      WebSocketService.sendToUser(
+        userId,
+        'notifications_archived',
+        { count: result.modifiedCount }
+      );
+      
+      return {
+        success: true,
+        modifiedCount: result.modifiedCount
+      };
+    } catch (error) {
+      logger.error(`Error archiving read notifications for user ${userId}:`, { error });
+      throw error;
+    }
+  }
+
+  /**
+   * Удаляет уведомление
+   * 
+   * @param {string} notificationId - ID уведомления
+   * @param {string} userId - ID пользователя (для проверки доступа)
+   * @returns {Promise<Object>} Результат операции
+   */
+  async deleteNotification(notificationId, userId) {
+    try {
+      const notification = await NotificationModel.findById(notificationId);
+      
+      if (!notification) {
+        throw new Error('Notification not found');
+      }
+      
+      // Проверяем, что уведомление принадлежит пользователю
+      if (notification.recipient.toString() !== userId) {
+        throw new Error('Access denied: notification belongs to another user');
+      }
+      
+      await NotificationModel.findByIdAndDelete(notificationId);
+      
+      // Отправляем обновление через WebSocket
+      WebSocketService.sendToUser(
+        userId,
+        'notification_deleted',
+        { id: notificationId }
+      );
+      
+      return { success: true, id: notificationId };
+    } catch (error) {
+      logger.error(`Error deleting notification ${notificationId}:`, { error });
+      throw error;
+    }
+  }
+
+  /**
+   * Отправляет уведомление о новом инциденте
+   * 
+   * @param {Object} incident - Объект инцидента
+   * @param {Array<string>} recipientIds - Массив ID получателей
+   * @returns {Promise<Array>} Массив созданных уведомлений
+   */
+  async sendIncidentNotification(incident, recipientIds) {
+    try {
+      const notificationPromises = recipientIds.map(recipientId => {
+        return this.createNotification({
+          title: `Новый инцидент: ${incident.title}`,
+          message: `Создан новый инцидент с приоритетом ${incident.priority}. ${incident.description.substring(0, 100)}${incident.description.length > 100 ? '...' : ''}`,
+          type: 'INCIDENT',
+          priority: this.mapIncidentPriorityToNotificationPriority(incident.priority),
+          recipient: recipientId,
+          sender: incident.createdBy,
+          relatedEntity: {
+            entityType: 'INCIDENT',
+            entityId: incident._id
+          },
+          link: `/incidents/${incident._id}`,
+          deliveryMethods: ['IN_APP', 'EMAIL']
+        });
+      });
+      
+      return await Promise.all(notificationPromises);
+    } catch (error) {
+      logger.error('Error sending incident notifications:', { error, incidentId: incident._id });
+      throw error;
+    }
+  }
+
+  /**
+   * Отправляет уведомление об обновлении инцидента
+   * 
+   * @param {Object} incident - Обновленный инцидент
+   * @param {string} updatedBy - ID пользователя, обновившего инцидент
+   * @param {Object} changes - Объект с изменениями
+   * @returns {Promise<Array>} Массив созданных уведомлений
+   */
+  async sendIncidentUpdateNotification(incident, updatedBy, changes) {
+    try {
+      // Определяем получателей: создатель инцидента, назначенные специалисты и наблюдатели
+      const recipientIds = new Set();
+      
+      if (incident.createdBy && incident.createdBy.toString() !== updatedBy) {
+        recipientIds.add(incident.createdBy.toString());
+      }
+      
+      if (incident.assignedTo && incident.assignedTo.toString() !== updatedBy) {
+        recipientIds.add(incident.assignedTo.toString());
+      }
+      
+      if (incident.watchers && incident.watchers.length > 0) {
+        incident.watchers.forEach(watcher => {
+          if (watcher.toString() !== updatedBy) {
+            recipientIds.add(watcher.toString());
+          }
+        });
+      }
+      
+      // Если нет получателей, выходим
+      if (recipientIds.size === 0) {
+        return [];
+      }
+      
+      // Формируем сообщение об изменениях
+      let changeMessage = '';
+      if (changes.status) {
+        changeMessage += `Статус изменен на "${changes.status}". `;
+      }
+      if (changes.priority) {
+        changeMessage += `Приоритет изменен на "${changes.priority}". `;
+      }
+      if (changes.assignedTo) {
+        changeMessage += `Назначен новый исполнитель. `;
+      }
+      if (changes.resolution) {
+        changeMessage += `Добавлено решение проблемы. `;
+      }
+      if (changes.comments) {
+        changeMessage += `Добавлен новый комментарий. `;
+      }
+      
+      // Создаем уведомления для всех получателей
+      const notificationPromises = Array.from(recipientIds).map(recipientId => {
+        return this.createNotification({
+          title: `Обновление инцидента: ${incident.title}`,
+          message: `${changeMessage}`,
+          type: 'INCIDENT',
+          priority: this.mapIncidentPriorityToNotificationPriority(incident.priority),
+          recipient: recipientId,
+          sender: updatedBy,
+          relatedEntity: {
+            entityType: 'INCIDENT',
+            entityId: incident._id
+          },
+          link: `/incidents/${incident._id}`,
+          deliveryMethods: ['IN_APP']
+        });
+      });
+      
+      return await Promise.all(notificationPromises);
+    } catch (error) {
+      logger.error('Error sending incident update notifications:', { error, incidentId: incident._id });
+      throw error;
+    }
+  }
+
+  /**
+   * Отправляет уведомление о назначении оборудования
+   * 
+   * @param {Object} equipment - Объект оборудования
+   * @param {string} userId - ID пользователя, которому назначено оборудование
+   * @returns {Promise<Object>} Созданное уведомление
+   */
+  async sendEquipmentAssignmentNotification(equipment, userId) {
+    try {
+      return await this.createNotification({
+        title: `Вам назначено оборудование: ${equipment.name}`,
+        message: `Вам было назначено оборудование: ${equipment.name} (${equipment.serialNumber || equipment.inventoryNumber || 'без номера'}). Тип: ${equipment.type}, Модель: ${equipment.model}.`,
+        type: 'EQUIPMENT',
+        priority: 'MEDIUM',
+        recipient: userId,
+        relatedEntity: {
+          entityType: 'EQUIPMENT',
+          entityId: equipment._id
+        },
+        link: `/equipment/${equipment._id}`,
+        deliveryMethods: ['IN_APP', 'EMAIL']
+      });
+    } catch (error) {
+      logger.error('Error sending equipment assignment notification:', { error, equipmentId: equipment._id });
+      throw error;
+    }
+  }
+
+  /**
+   * Отправляет уведомление о необходимости обслуживания оборудования
+   * 
+   * @param {Object} equipment - Объект оборудования
+   * @param {Array<string>} technicianIds - ID технических специалистов
+   * @returns {Promise<Array>} Массив созданных уведомлений
+   */
+  async sendEquipmentMaintenanceNotification(equipment, technicianIds) {
+    try {
+      const notificationPromises = technicianIds.map(technicianId => {
+        return this.createNotification({
+          title: `Требуется обслуживание оборудования: ${equipment.name}`,
+          message: `Оборудование ${equipment.name} (${equipment.serialNumber || equipment.inventoryNumber || 'без номера'}) требует планового обслуживания.`,
+          type: 'EQUIPMENT',
+          priority: 'MEDIUM',
+          recipient: technicianId,
+          relatedEntity: {
+            entityType: 'EQUIPMENT',
+            entityId: equipment._id
+          },
+          link: `/equipment/${equipment._id}`,
+          deliveryMethods: ['IN_APP', 'EMAIL']
+        });
+      });
+      
+      return await Promise.all(notificationPromises);
+    } catch (error) {
+      logger.error('Error sending equipment maintenance notifications:', { error, equipmentId: equipment._id });
+      throw error;
+    }
+  }
+
+  /**
+   * Отправляет системное уведомление всем пользователям или группе пользователей
+   * 
+   * @param {Object} notificationData - Данные уведомления
+   * @param {string} notificationData.title - Заголовок уведомления
+   * @param {string} notificationData.message - Текст уведомления
+   * @param {string} notificationData.priority - Приоритет
+   * @param {string} [notificationData.link] - Ссылка
+   * @param {Array<string>} [recipientIds] - ID получателей (если не указано, отправляется всем)
+   * @returns {Promise<Array>} Массив созданных уведомлений
+   */
+  async sendSystemNotification(notificationData, recipientIds = null) {
+    try {
+      let recipients;
+      
+      // Если получатели не указаны, отправляем всем активным пользователям
+      if (!recipientIds || recipientIds.length === 0) {
+        recipients = await UserModel.find({ isActive: true }).select('_id');
+        recipientIds = recipients.map(user => user._id);
+      }
+      
+      const notificationPromises = recipientIds.map(recipientId => {
+        return this.createNotification({
+          title: notificationData.title,
+          message: notificationData.message,
+          type: 'SYSTEM',
+          priority: notificationData.priority || 'MEDIUM',
+          recipient: recipientId,
+          link: notificationData.link || null,
+          deliveryMethods: ['IN_APP', 'EMAIL']
+        });
+      });
+      
+      return await Promise.all(notificationPromises);
+    } catch (error) {
+      logger.error('Error sending system notifications:', { error });
+      throw error;
+    }
+  }
+
+  /**
+   * Отправляет уведомление о готовности отчета
+   * 
+   * @param {Object} report - Объект отчета
+   * @param {string} userId - ID пользователя, запросившего отчет
+   * @returns {Promise<Object>} Созданное уведомление
+   */
+  async sendReportReadyNotification(report, userId) {
+    try {
+      return await this.createNotification({
+        title: `Отчет готов: ${report.name}`,
+        message: `Запрошенный вами отчет "${report.name}" готов и доступен для просмотра и скачивания.`,
+        type: 'REPORT',
+        priority: 'MEDIUM',
+        recipient: userId,
+        relatedEntity: {
+          entityType: 'REPORT',
+          entityId: report._id
+        },
+        link: `/reports/${report._id}`,
+        deliveryMethods: ['IN_APP', 'EMAIL'],
+        actions: [
+          {
+            label: 'Просмотреть',
+            url: `/reports/${report._id}`,
+            method: 'GET'
+          },
+          {
+            label: 'Скачать',
+            url: `/api/reports/${report._id}/download`,
+            method: 'GET'
+          }
+        ]
+      });
+    } catch (error) {
+      logger.error('Error sending report ready notification:', { error, reportId: report._id });
+      throw error;
+    }
+  }
+
+  /**
+   * Преобразует приоритет инцидента в приоритет уведомления
+   * 
+   * @param {string} incidentPriority - Приоритет инцидента
+   * @returns {string} Приоритет уведомления
+   */
+  mapIncidentPriorityToNotificationPriority(incidentPriority) {
+    const priorityMap = {
+      'CRITICAL': 'CRITICAL',
+      'HIGH': 'HIGH',
+      'MEDIUM': 'MEDIUM',
+      'LOW': 'LOW'
+    };
+    
+    return priorityMap[incidentPriority] || 'MEDIUM';
+  }
+
+  /**
+   * Очищает старые прочитанные и архивированные уведомления
+   * Может вызываться по расписанию
+   * 
+   * @param {number} [olderThanDays=90] - Удалять уведомления старше указанного количества дней
+   * @returns {Promise<Object>} Результат операции
+   */
+  async cleanupOldNotifications(olderThanDays = 90) {
+    try {
+      const cutoffDate = new Date();
+      cutoffDate.setDate(cutoffDate.getDate() - olderThanDays);
+      
+      const result = await NotificationModel.deleteMany({
+        status: { $in: ['READ', 'ARCHIVED'] },
+        createdAt: { $lt: cutoffDate }
+      });
+      
+      logger.info(`Cleaned up ${result.deletedCount} old notifications`);
+      
+      return {
+        success: true,
+        deletedCount: result.deletedCount
+      };
+    } catch (error) {
+      logger.error('Error cleaning up old notifications:', { error });
+      throw error;
+    }
+  }
+}
+
+module.exports = new NotificationService();

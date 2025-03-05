@@ -1,0 +1,205 @@
+const { ValidationError } = require('joi');
+const mongoose = require('mongoose');
+const logger = require('../config/winston');
+const constants = require('../utils/constants');
+
+/**
+ * Класс для создания пользовательских ошибок приложения
+ */
+class AppError extends Error {
+  /**
+   * @param {string} message - Сообщение об ошибке
+   * @param {number} statusCode - HTTP статус-код
+   * @param {Object} [details] - Дополнительные детали ошибки
+   */
+  constructor(message, statusCode, details = null) {
+    super(message);
+    this.name = this.constructor.name;
+    this.statusCode = statusCode;
+    this.details = details;
+    Error.captureStackTrace(this, this.constructor);
+  }
+}
+
+/**
+ * Класс для ошибок аутентификации
+ */
+class AuthenticationError extends AppError {
+  constructor(message = 'Ошибка аутентификации', details = null) {
+    super(message, constants.HTTP_STATUS.UNAUTHORIZED, details);
+    this.name = 'AuthenticationError';
+  }
+}
+
+/**
+ * Класс для ошибок авторизации (доступа)
+ */
+class ForbiddenError extends AppError {
+  constructor(message = 'Доступ запрещен', details = null) {
+    super(message, constants.HTTP_STATUS.FORBIDDEN, details);
+    this.name = 'ForbiddenError';
+  }
+}
+
+/**
+ * Класс для ошибок отсутствия ресурса
+ */
+class NotFoundError extends AppError {
+  constructor(message = 'Ресурс не найден', details = null) {
+    super(message, constants.HTTP_STATUS.NOT_FOUND, details);
+    this.name = 'NotFoundError';
+  }
+}
+
+/**
+ * Класс для ошибок валидации
+ */
+class ValidationAppError extends AppError {
+  constructor(message = 'Ошибка валидации данных', details = null) {
+    super(message, constants.HTTP_STATUS.BAD_REQUEST, details);
+    this.name = 'ValidationAppError';
+  }
+}
+
+/**
+ * Класс для ошибок конфликта данных
+ */
+class ConflictError extends AppError {
+  constructor(message = 'Конфликт данных', details = null) {
+    super(message, constants.HTTP_STATUS.CONFLICT, details);
+    this.name = 'ConflictError';
+  }
+}
+
+/**
+ * Middleware для обработки ошибок в приложении
+ * Централизованная обработка всех типов ошибок с соответствующими HTTP-статусами
+ * 
+ * @param {Error} err - Объект ошибки
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {Function} next - Express next middleware function
+ */
+const errorMiddleware = (err, req, res, next) => {
+  // Логирование ошибки
+  logger.error(`${err.name || 'Error'}: ${err.message}`, { 
+    metadata: {
+      path: req.path,
+      method: req.method,
+      ip: req.ip,
+      stack: err.stack,
+      userId: req.user ? req.user.id : 'unauthenticated'
+    }
+  });
+
+  // Определение типа ошибки и соответствующего HTTP-статуса
+  let statusCode = err.statusCode || constants.HTTP_STATUS.INTERNAL_SERVER_ERROR;
+  let errorMessage = err.message || 'Внутренняя ошибка сервера';
+  let errorDetails = err.details || null;
+
+  // Обработка различных типов ошибок
+  if (err instanceof ValidationError) {
+    // Обработка ошибок валидации Joi
+    statusCode = constants.HTTP_STATUS.BAD_REQUEST;
+    errorMessage = 'Ошибка валидации данных';
+    errorDetails = err.details.map(detail => ({
+      message: detail.message,
+      path: detail.path,
+      type: detail.type
+    }));
+  } 
+  // Обработка ошибок валидации Mongoose
+  else if (err instanceof mongoose.Error.ValidationError) {
+    statusCode = constants.HTTP_STATUS.BAD_REQUEST;
+    errorMessage = 'Ошибка валидации данных';
+    errorDetails = Object.keys(err.errors).reduce((result, key) => {
+      result[key] = err.errors[key].message;
+      return result;
+    }, {});
+  } 
+  // Обработка ошибок дублирования ключей в MongoDB
+  else if (err.name === 'MongoServerError' && err.code === 11000) {
+    statusCode = constants.HTTP_STATUS.CONFLICT;
+    errorMessage = 'Запись с такими данными уже существует';
+    const field = Object.keys(err.keyValue)[0];
+    errorDetails = { [field]: `Значение '${err.keyValue[field]}' уже используется` };
+  } 
+  // Обработка ошибок кастинга Mongoose
+  else if (err instanceof mongoose.Error.CastError) {
+    statusCode = constants.HTTP_STATUS.BAD_REQUEST;
+    errorMessage = 'Неверный формат данных';
+    errorDetails = { [err.path]: err.message };
+  } 
+  // Обработка ошибок JWT
+  else if (err.name === 'JsonWebTokenError') {
+    statusCode = constants.HTTP_STATUS.UNAUTHORIZED;
+    errorMessage = 'Недействительный токен авторизации';
+  } 
+  // Обработка истекших JWT
+  else if (err.name === 'TokenExpiredError') {
+    statusCode = constants.HTTP_STATUS.UNAUTHORIZED;
+    errorMessage = 'Срок действия токена истек';
+  } 
+  // Обработка ошибок авторизации
+  else if (err.name === 'UnauthorizedError' || err instanceof AuthenticationError) {
+    statusCode = constants.HTTP_STATUS.UNAUTHORIZED;
+    errorMessage = err.message || 'Ошибка авторизации';
+  } 
+  // Обработка ошибок доступа
+  else if (err.name === 'ForbiddenError' || err instanceof ForbiddenError) {
+    statusCode = constants.HTTP_STATUS.FORBIDDEN;
+    errorMessage = err.message || 'Доступ запрещен';
+  } 
+  // Обработка ошибок отсутствия ресурса
+  else if (err.name === 'NotFoundError' || err instanceof NotFoundError) {
+    statusCode = constants.HTTP_STATUS.NOT_FOUND;
+    errorMessage = err.message || 'Ресурс не найден';
+  }
+  // Обработка ошибок конфликта данных
+  else if (err.name === 'ConflictError' || err instanceof ConflictError) {
+    statusCode = constants.HTTP_STATUS.CONFLICT;
+    errorMessage = err.message || 'Конфликт данных';
+  }
+
+  // Формирование ответа
+  const errorResponse = {
+    success: false,
+    error: {
+      message: errorMessage,
+      code: statusCode,
+      ...(errorDetails && { details: errorDetails })
+    }
+  };
+
+  // В режиме разработки добавляем стек ошибки
+  if (process.env.NODE_ENV === 'development') {
+    errorResponse.error.stack = err.stack;
+  }
+
+  // Отправка ответа клиенту
+  res.status(statusCode).json(errorResponse);
+};
+
+/**
+ * Middleware для обработки ошибок 404 (Not Found)
+ * Вызывается, когда не найден обработчик для запрошенного маршрута
+ * 
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {Function} next - Express next middleware function
+ */
+const notFoundMiddleware = (req, res, next) => {
+  const error = new NotFoundError(`Маршрут ${req.originalUrl} не найден`);
+  next(error);
+};
+
+module.exports = {
+  errorMiddleware,
+  notFoundMiddleware,
+  AppError,
+  AuthenticationError,
+  ForbiddenError,
+  NotFoundError,
+  ValidationAppError,
+  ConflictError
+};

@@ -1,0 +1,1123 @@
+/**
+ * Excel Service
+ * 
+ * Сервис для генерации Excel-отчетов на основе данных из системы IT Service Desk.
+ * Поддерживает создание отчетов по инцидентам, оборудованию и другим сущностям.
+ * Предоставляет функции для форматирования, стилизации и экспорта данных в формате Excel.
+ */
+
+const xlsx = require('xlsx');
+const path = require('path');
+const fs = require('fs');
+const { format } = require('date-fns');
+const config = require('../config/config');
+const logger = require('../config/winston');
+
+class ExcelService {
+  /**
+   * Создает новый экземпляр сервиса Excel
+   */
+  constructor() {
+    this.tempDir = path.join(__dirname, '../temp');
+    
+    // Создаем временную директорию, если она не существует
+    if (!fs.existsSync(this.tempDir)) {
+      fs.mkdirSync(this.tempDir, { recursive: true });
+    }
+    
+    // Базовые стили для заголовков
+    this.headerStyle = {
+      font: { bold: true, color: { rgb: 'FFFFFF' } },
+      fill: { fgColor: { rgb: '4472C4' } },
+      alignment: { horizontal: 'center', vertical: 'center' },
+      border: {
+        top: { style: 'thin' },
+        bottom: { style: 'thin' },
+        left: { style: 'thin' },
+        right: { style: 'thin' }
+      }
+    };
+    
+    // Базовые стили для ячеек данных
+    this.cellStyle = {
+      border: {
+        top: { style: 'thin' },
+        bottom: { style: 'thin' },
+        left: { style: 'thin' },
+        right: { style: 'thin' }
+      }
+    };
+    
+    // Стили для статусов инцидентов
+    this.statusStyles = {
+      'open': { fill: { fgColor: { rgb: 'FFEB9C' } } },
+      'in_progress': { fill: { fgColor: { rgb: 'BDD7EE' } } },
+      'resolved': { fill: { fgColor: { rgb: 'C6E0B4' } } },
+      'closed': { fill: { fgColor: { rgb: 'D9D9D9' } } }
+    };
+    
+    // Стили для приоритетов
+    this.priorityStyles = {
+      'high': { font: { color: { rgb: 'FF0000' } } },
+      'medium': { font: { color: { rgb: 'FF9900' } } },
+      'low': { font: { color: { rgb: '00B050' } } }
+    };
+  }
+
+  /**
+   * Генерирует отчет по инцидентам в формате Excel
+   * @param {Array} incidents - Массив инцидентов для включения в отчет
+   * @param {Object} options - Опции для настройки отчета
+   * @returns {Promise<string>} Путь к сгенерированному файлу
+   */
+  async generateIncidentReport(incidents, options = {}) {
+    try {
+      const {
+        title = 'Отчет по инцидентам',
+        dateRange = '',
+        filters = {},
+        groupBy = null
+      } = options;
+      
+      // Создаем новую книгу Excel
+      const workbook = xlsx.utils.book_new();
+      
+      // Если нужна группировка, обрабатываем данные соответствующим образом
+      if (groupBy) {
+        await this._generateGroupedIncidentReport(workbook, incidents, groupBy, options);
+      } else {
+        // Преобразуем данные инцидентов в формат для Excel
+        const formattedData = incidents.map(incident => ({
+          'ID': incident._id.toString(),
+          'Заголовок': incident.title,
+          'Описание': incident.description,
+          'Статус': this._translateStatus(incident.status),
+          'Приоритет': this._translatePriority(incident.priority),
+          'Категория': incident.category,
+          'Создан': format(new Date(incident.createdAt), 'dd.MM.yyyy HH:mm'),
+          'Обновлен': format(new Date(incident.updatedAt), 'dd.MM.yyyy HH:mm'),
+          'Назначен': incident.assignedTo ? incident.assignedTo.username : 'Не назначен',
+          'Создатель': incident.createdBy ? incident.createdBy.username : 'Система',
+          'Оборудование': incident.equipment ? incident.equipment.name : 'Не указано',
+          'Время решения (часы)': incident.resolvedAt ? 
+            Math.round((new Date(incident.resolvedAt) - new Date(incident.createdAt)) / 36000) / 100 : 
+            'Не решен'
+        }));
+        
+        // Создаем лист с данными
+        const worksheet = xlsx.utils.json_to_sheet(formattedData);
+        
+        // Применяем стили к заголовкам и ячейкам
+        this._applyIncidentStyles(worksheet, formattedData);
+        
+        // Добавляем лист в книгу
+        xlsx.utils.book_append_sheet(workbook, worksheet, 'Инциденты');
+        
+        // Добавляем информацию о фильтрах и дате создания отчета
+        this._addReportMetadata(worksheet, {
+          title,
+          dateRange,
+          filters,
+          createdAt: format(new Date(), 'dd.MM.yyyy HH:mm')
+        });
+      }
+      
+      // Генерируем имя файла на основе текущей даты и времени
+      const fileName = `incident_report_${format(new Date(), 'yyyyMMdd_HHmmss')}.xlsx`;
+      const filePath = path.join(this.tempDir, fileName);
+      
+      // Записываем файл
+      xlsx.writeFile(workbook, filePath);
+      
+      logger.info(`Excel report generated: ${filePath}`);
+      
+      return filePath;
+    } catch (error) {
+      logger.error('Error generating Excel incident report:', error);
+      throw new Error(`Failed to generate Excel report: ${error.message}`);
+    }
+  }
+
+  /**
+   * Генерирует отчет по оборудованию в формате Excel
+   * @param {Array} equipment - Массив оборудования для включения в отчет
+   * @param {Object} options - Опции для настройки отчета
+   * @returns {Promise<string>} Путь к сгенерированному файлу
+   */
+  async generateEquipmentReport(equipment, options = {}) {
+    try {
+      const {
+        title = 'Отчет по оборудованию',
+        dateRange = '',
+        filters = {},
+        groupBy = null
+      } = options;
+      
+      // Создаем новую книгу Excel
+      const workbook = xlsx.utils.book_new();
+      
+      // Если нужна группировка, обрабатываем данные соответствующим образом
+      if (groupBy) {
+        await this._generateGroupedEquipmentReport(workbook, equipment, groupBy, options);
+      } else {
+        // Преобразуем данные оборудования в формат для Excel
+        const formattedData = equipment.map(item => ({
+          'ID': item._id.toString(),
+          'Наименование': item.name,
+          'Тип': item.type,
+          'Статус': this._translateEquipmentStatus(item.status),
+          'Серийный номер': item.serialNumber,
+          'Инвентарный номер': item.inventoryNumber,
+          'Местоположение': item.location,
+          'Дата приобретения': item.purchaseDate ? format(new Date(item.purchaseDate), 'dd.MM.yyyy') : 'Не указано',
+          'Дата ввода в эксплуатацию': item.commissioningDate ? format(new Date(item.commissioningDate), 'dd.MM.yyyy') : 'Не указано',
+          'Гарантия до': item.warrantyExpiration ? format(new Date(item.warrantyExpiration), 'dd.MM.yyyy') : 'Не указано',
+          'Ответственный': item.responsiblePerson ? item.responsiblePerson.username : 'Не назначен',
+          'Примечания': item.notes || ''
+        }));
+        
+        // Создаем лист с данными
+        const worksheet = xlsx.utils.json_to_sheet(formattedData);
+        
+        // Применяем стили к заголовкам и ячейкам
+        this._applyEquipmentStyles(worksheet, formattedData);
+        
+        // Добавляем лист в книгу
+        xlsx.utils.book_append_sheet(workbook, worksheet, 'Оборудование');
+        
+        // Добавляем информацию о фильтрах и дате создания отчета
+        this._addReportMetadata(worksheet, {
+          title,
+          dateRange,
+          filters,
+          createdAt: format(new Date(), 'dd.MM.yyyy HH:mm')
+        });
+      }
+      
+      // Генерируем имя файла на основе текущей даты и времени
+      const fileName = `equipment_report_${format(new Date(), 'yyyyMMdd_HHmmss')}.xlsx`;
+      const filePath = path.join(this.tempDir, fileName);
+      
+      // Записываем файл
+      xlsx.writeFile(workbook, filePath);
+      
+      logger.info(`Excel equipment report generated: ${filePath}`);
+      
+      return filePath;
+    } catch (error) {
+      logger.error('Error generating Excel equipment report:', error);
+      throw new Error(`Failed to generate Excel equipment report: ${error.message}`);
+    }
+  }
+
+  /**
+   * Генерирует сводный отчет по статистике в формате Excel
+   * @param {Object} data - Объект с данными для отчета
+   * @param {Object} options - Опции для настройки отчета
+   * @returns {Promise<string>} Путь к сгенерированному файлу
+   */
+  async generateDashboardReport(data, options = {}) {
+    try {
+      const {
+        title = 'Сводный отчет по IT Service Desk',
+        period = 'за все время',
+      } = options;
+      
+      // Создаем новую книгу Excel
+      const workbook = xlsx.utils.book_new();
+      
+      // Создаем лист для общей статистики
+      const summaryData = [
+        { 'Показатель': 'Всего инцидентов', 'Значение': data.incidentStats.total },
+        { 'Показатель': 'Открытые инциденты', 'Значение': data.incidentStats.open },
+        { 'Показатель': 'В работе', 'Значение': data.incidentStats.inProgress },
+        { 'Показатель': 'Решенные инциденты', 'Значение': data.incidentStats.resolved },
+        { 'Показатель': 'Закрытые инциденты', 'Значение': data.incidentStats.closed },
+        { 'Показатель': 'Среднее время решения (часы)', 'Значение': data.incidentStats.avgResolutionTime },
+        { 'Показатель': 'Всего оборудования', 'Значение': data.equipmentStats.total },
+        { 'Показатель': 'Активное оборудование', 'Значение': data.equipmentStats.active },
+        { 'Показатель': 'Оборудование на обслуживании', 'Значение': data.equipmentStats.maintenance },
+        { 'Показатель': 'Списанное оборудование', 'Значение': data.equipmentStats.decommissioned }
+      ];
+      
+      const summarySheet = xlsx.utils.json_to_sheet(summaryData);
+      xlsx.utils.book_append_sheet(workbook, summarySheet, 'Общая статистика');
+      
+      // Применяем стили к листу общей статистики
+      this._applySummaryStyles(summarySheet, summaryData);
+      
+      // Создаем лист для статистики по категориям инцидентов
+      if (data.incidentsByCategory && data.incidentsByCategory.length > 0) {
+        const categoryData = data.incidentsByCategory.map(item => ({
+          'Категория': item.category,
+          'Количество': item.count,
+          'Процент': `${item.percentage.toFixed(2)}%`
+        }));
+        
+        const categorySheet = xlsx.utils.json_to_sheet(categoryData);
+        xlsx.utils.book_append_sheet(workbook, categorySheet, 'Инциденты по категориям');
+        this._applyStandardStyles(categorySheet, categoryData);
+      }
+      
+      // Создаем лист для статистики по типам оборудования
+      if (data.equipmentByType && data.equipmentByType.length > 0) {
+        const typeData = data.equipmentByType.map(item => ({
+          'Тип оборудования': item.type,
+          'Количество': item.count,
+          'Процент': `${item.percentage.toFixed(2)}%`
+        }));
+        
+        const typeSheet = xlsx.utils.json_to_sheet(typeData);
+        xlsx.utils.book_append_sheet(workbook, typeSheet, 'Оборудование по типам');
+        this._applyStandardStyles(typeSheet, typeData);
+      }
+      
+      // Добавляем лист с данными по производительности сотрудников
+      if (data.userPerformance && data.userPerformance.length > 0) {
+        const performanceData = data.userPerformance.map(item => ({
+          'Сотрудник': item.username,
+          'Назначено инцидентов': item.assignedCount,
+          'Решено инцидентов': item.resolvedCount,
+          'Среднее время решения (часы)': item.avgResolutionTime,
+          'Эффективность (%)': item.efficiency
+        }));
+        
+        const performanceSheet = xlsx.utils.json_to_sheet(performanceData);
+        xlsx.utils.book_append_sheet(workbook, performanceSheet, 'Производительность');
+        this._applyStandardStyles(performanceSheet, performanceData);
+      }
+      
+      // Добавляем метаданные отчета
+      this._addReportMetadata(summarySheet, {
+        title,
+        period,
+        createdAt: format(new Date(), 'dd.MM.yyyy HH:mm')
+      });
+      
+      // Генерируем имя файла на основе текущей даты и времени
+      const fileName = `dashboard_report_${format(new Date(), 'yyyyMMdd_HHmmss')}.xlsx`;
+      const filePath = path.join(this.tempDir, fileName);
+      
+      // Записываем файл
+      xlsx.writeFile(workbook, filePath);
+      
+      logger.info(`Excel dashboard report generated: ${filePath}`);
+      
+      return filePath;
+    } catch (error) {
+      logger.error('Error generating Excel dashboard report:', error);
+      throw new Error(`Failed to generate Excel dashboard report: ${error.message}`);
+    }
+  }
+
+  /**
+   * Генерирует отчет по пользователям системы
+   * @param {Array} users - Массив пользователей
+   * @param {Object} options - Опции для настройки отчета
+   * @returns {Promise<string>} Путь к сгенерированному файлу
+   */
+  async generateUserReport(users, options = {}) {
+    try {
+      const {
+        title = 'Отчет по пользователям системы',
+        includeStats = true
+      } = options;
+      
+      // Создаем новую книгу Excel
+      const workbook = xlsx.utils.book_new();
+      
+      // Преобразуем данные пользователей в формат для Excel
+      const formattedData = users.map(user => ({
+        'ID': user._id.toString(),
+        'Имя пользователя': user.username,
+        'Email': user.email,
+        'Роль': this._translateRole(user.role),
+        'Дата регистрации': format(new Date(user.createdAt), 'dd.MM.yyyy'),
+        'Последний вход': user.lastLogin ? format(new Date(user.lastLogin), 'dd.MM.yyyy HH:mm') : 'Нет данных',
+        'Статус': user.isActive ? 'Активен' : 'Заблокирован',
+        'Отдел': user.department || 'Не указан',
+        'Должность': user.position || 'Не указана'
+      }));
+      
+      // Создаем лист с данными
+      const worksheet = xlsx.utils.json_to_sheet(formattedData);
+      
+      // Применяем стили
+      this._applyStandardStyles(worksheet, formattedData);
+      
+      // Добавляем лист в книгу
+      xlsx.utils.book_append_sheet(workbook, worksheet, 'Пользователи');
+      
+      // Добавляем информацию о дате создания отчета
+      this._addReportMetadata(worksheet, {
+        title,
+        createdAt: format(new Date(), 'dd.MM.yyyy HH:mm')
+      });
+      
+      // Если нужно включить статистику по пользователям
+      if (includeStats && options.userStats) {
+        const statsData = options.userStats.map(stat => ({
+          'Имя пользователя': stat.username,
+          'Создано инцидентов': stat.createdIncidents,
+          'Назначено инцидентов': stat.assignedIncidents,
+          'Решено инцидентов': stat.resolvedIncidents,
+          'Среднее время решения (часы)': stat.avgResolutionTime
+        }));
+        
+        const statsSheet = xlsx.utils.json_to_sheet(statsData);
+        this._applyStandardStyles(statsSheet, statsData);
+        xlsx.utils.book_append_sheet(workbook, statsSheet, 'Статистика пользователей');
+      }
+      
+      // Генерируем имя файла на основе текущей даты и времени
+      const fileName = `user_report_${format(new Date(), 'yyyyMMdd_HHmmss')}.xlsx`;
+      const filePath = path.join(this.tempDir, fileName);
+      
+      // Записываем файл
+      xlsx.writeFile(workbook, filePath);
+      
+      logger.info(`Excel user report generated: ${filePath}`);
+      
+      return filePath;
+    } catch (error) {
+      logger.error('Error generating Excel user report:', error);
+      throw new Error(`Failed to generate Excel user report: ${error.message}`);
+    }
+  }
+
+  /**
+   * Удаляет временный файл отчета после его отправки
+   * @param {string} filePath - Путь к файлу для удаления
+   * @returns {Promise<void>}
+   */
+  async cleanupTempFile(filePath) {
+    try {
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+        logger.info(`Temporary file removed: ${filePath}`);
+      }
+    } catch (error) {
+      logger.error(`Error removing temporary file ${filePath}:`, error);
+    }
+  }
+
+  /**
+   * Генерирует сгруппированный отчет по инцидентам
+   * @param {Object} workbook - Книга Excel
+   * @param {Array} incidents - Массив инцидентов
+   * @param {string} groupBy - Поле для группировки
+   * @param {Object} options - Дополнительные опции
+   * @private
+   */
+  async _generateGroupedIncidentReport(workbook, incidents, groupBy, options) {
+    // Группируем инциденты по указанному полю
+    const groupedIncidents = {};
+    
+    incidents.forEach(incident => {
+      let groupKey;
+      
+      switch (groupBy) {
+        case 'status':
+          groupKey = this._translateStatus(incident.status);
+          break;
+        case 'priority':
+          groupKey = this._translatePriority(incident.priority);
+          break;
+        case 'category':
+          groupKey = incident.category || 'Без категории';
+          break;
+        case 'assignedTo':
+          groupKey = incident.assignedTo ? incident.assignedTo.username : 'Не назначен';
+          break;
+        case 'createdBy':
+          groupKey = incident.createdBy ? incident.createdBy.username : 'Система';
+          break;
+        default:
+          groupKey = 'Все инциденты';
+      }
+      
+      if (!groupedIncidents[groupKey]) {
+        groupedIncidents[groupKey] = [];
+      }
+      
+      groupedIncidents[groupKey].push(incident);
+    });
+    
+    // Создаем отдельный лист для каждой группы
+    for (const [groupName, groupIncidents] of Object.entries(groupedIncidents)) {
+      // Преобразуем данные инцидентов в формат для Excel
+      const formattedData = groupIncidents.map(incident => ({
+        'ID': incident._id.toString(),
+        'Заголовок': incident.title,
+        'Описание': incident.description,
+        'Статус': this._translateStatus(incident.status),
+        'Приоритет': this._translatePriority(incident.priority),
+        'Категория': incident.category,
+        'Создан': format(new Date(incident.createdAt), 'dd.MM.yyyy HH:mm'),
+        'Обновлен': format(new Date(incident.updatedAt), 'dd.MM.yyyy HH:mm'),
+        'Назначен': incident.assignedTo ? incident.assignedTo.username : 'Не назначен',
+        'Создатель': incident.createdBy ? incident.createdBy.username : 'Система',
+        'Оборудование': incident.equipment ? incident.equipment.name : 'Не указано',
+        'Время решения (часы)': incident.resolvedAt ? 
+          Math.round((new Date(incident.resolvedAt) - new Date(incident.createdAt)) / 36000) / 100 : 
+          'Не решен'
+      }));
+      
+      // Создаем лист с данными
+      const worksheet = xlsx.utils.json_to_sheet(formattedData);
+      
+      // Применяем стили к заголовкам и ячейкам
+      this._applyIncidentStyles(worksheet, formattedData);
+      
+      // Добавляем лист в книгу
+      const sheetName = groupName.length > 31 ? groupName.substring(0, 28) + '...' : groupName;
+      xlsx.utils.book_append_sheet(workbook, worksheet, sheetName);
+      
+      // Добавляем информацию о группе и дате создания отчета
+      this._addReportMetadata(worksheet, {
+        title: `Инциденты: ${groupName}`,
+        count: groupIncidents.length,
+        createdAt: format(new Date(), 'dd.MM.yyyy HH:mm')
+      });
+    }
+    
+    // Создаем сводный лист
+    const summaryData = Object.entries(groupedIncidents).map(([groupName, groupIncidents]) => ({
+      'Группа': groupName,
+      'Количество инцидентов': groupIncidents.length,
+      'Процент': `${Math.round(groupIncidents.length / incidents.length * 1000) / 10}%`
+    }));
+    
+    const summarySheet = xlsx.utils.json_to_sheet(summaryData);
+    this._applyStandardStyles(summarySheet, summaryData);
+    xlsx.utils.book_append_sheet(workbook, summarySheet, 'Сводка');
+    
+    // Добавляем информацию о группировке и дате создания отчета
+    this._addReportMetadata(summarySheet, {
+      title: `Сводка инцидентов по ${this._translateGroupBy(groupBy)}`,
+      total: incidents.length,
+      createdAt: format(new Date(), 'dd.MM.yyyy HH:mm')
+    });
+  }
+
+  /**
+   * Генерирует сгруппированный отчет по оборудованию
+   * @param {Object} workbook - Книга Excel
+   * @param {Array} equipment - Массив оборудования
+   * @param {string} groupBy - Поле для группировки
+   * @param {Object} options - Дополнительные опции
+   * @private
+   */
+  async _generateGroupedEquipmentReport(workbook, equipment, groupBy, options) {
+    // Группируем оборудование по указанному полю
+    const groupedEquipment = {};
+    
+    equipment.forEach(item => {
+      let groupKey;
+      
+      switch (groupBy) {
+        case 'type':
+          groupKey = item.type || 'Без типа';
+          break;
+        case 'status':
+          groupKey = this._translateEquipmentStatus(item.status);
+          break;
+        case 'location':
+          groupKey = item.location || 'Без местоположения';
+          break;
+        case 'responsiblePerson':
+          groupKey = item.responsiblePerson ? item.responsiblePerson.username : 'Не назначен';
+          break;
+        default:
+          groupKey = 'Все оборудование';
+      }
+      
+      if (!groupedEquipment[groupKey]) {
+        groupedEquipment[groupKey] = [];
+      }
+      
+      groupedEquipment[groupKey].push(item);
+    });
+    
+    // Создаем отдельный лист для каждой группы
+    for (const [groupName, groupEquipment] of Object.entries(groupedEquipment)) {
+      // Преобразуем данные оборудования в формат для Excel
+      const formattedData = groupEquipment.map(item => ({
+        'ID': item._id.toString(),
+        'Наименование': item.name,
+        'Тип': item.type,
+        'Статус': this._translateEquipmentStatus(item.status),
+        'Серийный номер': item.serialNumber,
+        'Инвентарный номер': item.inventoryNumber,
+        'Местоположение': item.location,
+        'Дата приобретения': item.purchaseDate ? format(new Date(item.purchaseDate), 'dd.MM.yyyy') : 'Не указано',
+        'Дата ввода в эксплуатацию': item.commissioningDate ? format(new Date(item.commissioningDate), 'dd.MM.yyyy') : 'Не указано',
+        'Гарантия до': item.warrantyExpiration ? format(new Date(item.warrantyExpiration), 'dd.MM.yyyy') : 'Не указано',
+        'Ответственный': item.responsiblePerson ? item.responsiblePerson.username : 'Не назначен',
+        'Примечания': item.notes || ''
+      }));
+      
+      // Создаем лист с данными
+      const worksheet = xlsx.utils.json_to_sheet(formattedData);
+      
+      // Применяем стили к заголовкам и ячейкам
+      this._applyEquipmentStyles(worksheet, formattedData);
+      
+      // Добавляем лист в книгу
+      const sheetName = groupName.length > 31 ? groupName.substring(0, 28) + '...' : groupName;
+      xlsx.utils.book_append_sheet(workbook, worksheet, sheetName);
+      
+      // Добавляем информацию о группе и дате создания отчета
+      this._addReportMetadata(worksheet, {
+        title: `Оборудование: ${groupName}`,
+        count: groupEquipment.length,
+        createdAt: format(new Date(), 'dd.MM.yyyy HH:mm')
+      });
+    }
+    
+    // Создаем сводный лист
+    const summaryData = Object.entries(groupedEquipment).map(([groupName, groupEquipment]) => ({
+      'Группа': groupName,
+      'Количество оборудования': groupEquipment.length,
+      'Процент': `${Math.round(groupEquipment.length / equipment.length * 1000) / 10}%`
+    }));
+    
+    const summarySheet = xlsx.utils.json_to_sheet(summaryData);
+    this._applyStandardStyles(summarySheet, summaryData);
+    xlsx.utils.book_append_sheet(workbook, summarySheet, 'Сводка');
+    
+    // Добавляем информацию о группировке и дате создания отчета
+    this._addReportMetadata(summarySheet, {
+      title: `Сводка оборудования по ${this._translateGroupBy(groupBy, true)}`,
+      total: equipment.length,
+      createdAt: format(new Date(), 'dd.MM.yyyy HH:mm')
+    });
+  }
+
+  /**
+   * Применяет стили к листу с инцидентами
+   * @param {Object} worksheet - Лист Excel
+   * @param {Array} data - Данные для стилизации
+   * @private
+   */
+  _applyIncidentStyles(worksheet, data) {
+    if (!data || data.length === 0) return;
+    
+    // Получаем диапазон данных
+    const range = xlsx.utils.decode_range(worksheet['!ref']);
+    
+    // Применяем стили к заголовкам
+    for (let col = range.s.c; col <= range.e.c; col++) {
+      const cellRef = xlsx.utils.encode_cell({ r: range.s.r, c: col });
+      if (!worksheet[cellRef]) continue;
+      
+      worksheet[cellRef].s = this.headerStyle;
+    }
+    
+    // Применяем стили к ячейкам данных
+    for (let row = range.s.r + 1; row <= range.e.r; row++) {
+      for (let col = range.s.c; col <= range.e.c; col++) {
+        const cellRef = xlsx.utils.encode_cell({ r: row, c: col });
+        if (!worksheet[cellRef]) continue;
+        
+        // Базовые стили для всех ячеек
+        worksheet[cellRef].s = { ...this.cellStyle };
+        
+        // Применяем специальные стили в зависимости от содержимого
+        const headerRef = xlsx.utils.encode_cell({ r: range.s.r, c: col });
+        const headerValue = worksheet[headerRef].v;
+        
+        if (headerValue === 'Статус') {
+          const status = worksheet[cellRef].v.toLowerCase();
+          const statusKey = this._getStatusKey(status);
+          if (this.statusStyles[statusKey]) {
+            worksheet[cellRef].s = {
+              ...worksheet[cellRef].s,
+              ...this.statusStyles[statusKey]
+            };
+          }
+        } else if (headerValue === 'Приоритет') {
+          const priority = worksheet[cellRef].v.toLowerCase();
+          const priorityKey = this._getPriorityKey(priority);
+          if (this.priorityStyles[priorityKey]) {
+            worksheet[cellRef].s = {
+              ...worksheet[cellRef].s,
+              ...this.priorityStyles[priorityKey]
+            };
+          }
+        }
+      }
+    }
+    
+    // Устанавливаем ширину столбцов
+    const cols = [];
+    for (let col = range.s.c; col <= range.e.c; col++) {
+      const headerRef = xlsx.utils.encode_cell({ r: range.s.r, c: col });
+      const headerValue = worksheet[headerRef].v;
+      
+      let width;
+      switch (headerValue) {
+        case 'ID':
+          width = 10;
+          break;
+        case 'Заголовок':
+          width = 30;
+          break;
+        case 'Описание':
+          width = 40;
+          break;
+        case 'Статус':
+        case 'Приоритет':
+        case 'Категория':
+          width = 15;
+          break;
+        case 'Создан':
+        case 'Обновлен':
+          width = 20;
+          break;
+        case 'Назначен':
+        case 'Создатель':
+          width = 20;
+          break;
+        case 'Оборудование':
+          width = 25;
+          break;
+        case 'Время решения (часы)':
+          width = 20;
+          break;
+        default:
+          width = 15;
+      }
+      
+      cols.push({ wch: width });
+    }
+    
+    worksheet['!cols'] = cols;
+  }
+
+  /**
+   * Применяет стили к листу с оборудованием
+   * @param {Object} worksheet - Лист Excel
+   * @param {Array} data - Данные для стилизации
+   * @private
+   */
+  _applyEquipmentStyles(worksheet, data) {
+    if (!data || data.length === 0) return;
+    
+    // Получаем диапазон данных
+    const range = xlsx.utils.decode_range(worksheet['!ref']);
+    
+    // Применяем стили к заголовкам
+    for (let col = range.s.c; col <= range.e.c; col++) {
+      const cellRef = xlsx.utils.encode_cell({ r: range.s.r, c: col });
+      if (!worksheet[cellRef]) continue;
+      
+      worksheet[cellRef].s = this.headerStyle;
+    }
+    
+    // Применяем стили к ячейкам данных
+    for (let row = range.s.r + 1; row <= range.e.r; row++) {
+      for (let col = range.s.c; col <= range.e.c; col++) {
+        const cellRef = xlsx.utils.encode_cell({ r: row, c: col });
+        if (!worksheet[cellRef]) continue;
+        
+        // Базовые стили для всех ячеек
+        worksheet[cellRef].s = { ...this.cellStyle };
+        
+        // Применяем специальные стили в зависимости от содержимого
+        const headerRef = xlsx.utils.encode_cell({ r: range.s.r, c: col });
+        const headerValue = worksheet[headerRef].v;
+        
+        if (headerValue === 'Статус') {
+          const status = worksheet[cellRef].v;
+          if (status === 'Активно') {
+            worksheet[cellRef].s = {
+              ...worksheet[cellRef].s,
+              fill: { fgColor: { rgb: 'C6E0B4' } }
+            };
+          } else if (status === 'На обслуживании') {
+            worksheet[cellRef].s = {
+              ...worksheet[cellRef].s,
+              fill: { fgColor: { rgb: 'FFEB9C' } }
+            };
+          } else if (status === 'Списано') {
+            worksheet[cellRef].s = {
+              ...worksheet[cellRef].s,
+              fill: { fgColor: { rgb: 'D9D9D9' } }
+            };
+          }
+        } else if (headerValue === 'Гарантия до') {
+          const warrantyDate = worksheet[cellRef].v;
+          if (warrantyDate !== 'Не указано') {
+            const today = new Date();
+            const warranty = new Date(warrantyDate.split('.').reverse().join('-'));
+            
+            if (warranty < today) {
+              worksheet[cellRef].s = {
+                ...worksheet[cellRef].s,
+                font: { color: { rgb: 'FF0000' } }
+              };
+            } else if (warranty < new Date(today.setMonth(today.getMonth() + 3))) {
+              worksheet[cellRef].s = {
+                ...worksheet[cellRef].s,
+                font: { color: { rgb: 'FF9900' } }
+              };
+            }
+          }
+        }
+      }
+    }
+    
+    // Устанавливаем ширину столбцов
+    const cols = [];
+    for (let col = range.s.c; col <= range.e.c; col++) {
+      const headerRef = xlsx.utils.encode_cell({ r: range.s.r, c: col });
+      const headerValue = worksheet[headerRef].v;
+      
+      let width;
+      switch (headerValue) {
+        case 'ID':
+          width = 10;
+          break;
+        case 'Наименование':
+          width = 30;
+          break;
+        case 'Тип':
+        case 'Статус':
+          width = 15;
+          break;
+        case 'Серийный номер':
+        case 'Инвентарный номер':
+          width = 20;
+          break;
+        case 'Местоположение':
+          width = 20;
+          break;
+        case 'Дата приобретения':
+        case 'Дата ввода в эксплуатацию':
+        case 'Гарантия до':
+          width = 20;
+          break;
+        case 'Ответственный':
+          width = 20;
+          break;
+        case 'Примечания':
+          width = 40;
+          break;
+        default:
+          width = 15;
+      }
+      
+      cols.push({ wch: width });
+    }
+    
+    worksheet['!cols'] = cols;
+  }
+
+  /**
+   * Применяет стандартные стили к листу
+   * @param {Object} worksheet - Лист Excel
+   * @param {Array} data - Данные для стилизации
+   * @private
+   */
+  _applyStandardStyles(worksheet, data) {
+    if (!data || data.length === 0) return;
+    
+    // Получаем диапазон данных
+    const range = xlsx.utils.decode_range(worksheet['!ref']);
+    
+    // Применяем стили к заголовкам
+    for (let col = range.s.c; col <= range.e.c; col++) {
+      const cellRef = xlsx.utils.encode_cell({ r: range.s.r, c: col });
+      if (!worksheet[cellRef]) continue;
+      
+      worksheet[cellRef].s = this.headerStyle;
+    }
+    
+    // Применяем стили к ячейкам данных
+    for (let row = range.s.r + 1; row <= range.e.r; row++) {
+      for (let col = range.s.c; col <= range.e.c; col++) {
+        const cellRef = xlsx.utils.encode_cell({ r: row, c: col });
+        if (!worksheet[cellRef]) continue;
+        
+        // Базовые стили для всех ячеек
+        worksheet[cellRef].s = { ...this.cellStyle };
+      }
+    }
+    
+    // Устанавливаем ширину столбцов
+    const cols = [];
+    for (let col = range.s.c; col <= range.e.c; col++) {
+      cols.push({ wch: 20 });
+    }
+    
+    worksheet['!cols'] = cols;
+  }
+
+  /**
+   * Применяет стили к листу со сводной информацией
+   * @param {Object} worksheet - Лист Excel
+   * @param {Array} data - Данные для стилизации
+   * @private
+   */
+  _applySummaryStyles(worksheet, data) {
+    if (!data || data.length === 0) return;
+    
+    // Получаем диапазон данных
+    const range = xlsx.utils.decode_range(worksheet['!ref']);
+    
+    // Применяем стили к заголовкам
+    for (let col = range.s.c; col <= range.e.c; col++) {
+      const cellRef = xlsx.utils.encode_cell({ r: range.s.r, c: col });
+      if (!worksheet[cellRef]) continue;
+      
+      worksheet[cellRef].s = this.headerStyle;
+    }
+    
+    // Применяем стили к ячейкам данных
+    for (let row = range.s.r + 1; row <= range.e.r; row++) {
+      for (let col = range.s.c; col <= range.e.c; col++) {
+        const cellRef = xlsx.utils.encode_cell({ r: row, c: col });
+        if (!worksheet[cellRef]) continue;
+        
+        // Базовые стили для всех ячеек
+        worksheet[cellRef].s = { ...this.cellStyle };
+        
+        // Выделяем первый столбец жирным
+        if (col === range.s.c) {
+          worksheet[cellRef].s = {
+            ...worksheet[cellRef].s,
+            font: { bold: true }
+          };
+        }
+      }
+    }
+    
+    // Устанавливаем ширину столбцов
+    worksheet['!cols'] = [
+      { wch: 30 }, // Показатель
+      { wch: 20 }  // Значение
+    ];
+  }
+
+  /**
+   * Добавляет метаданные отчета в лист
+   * @param {Object} worksheet - Лист Excel
+   * @param {Object} metadata - Метаданные отчета
+   * @private
+   */
+  _addReportMetadata(worksheet, metadata) {
+    // Получаем текущий диапазон данных
+    const range = xlsx.utils.decode_range(worksheet['!ref']);
+    
+    // Добавляем пустую строку после данных
+    const startRow = range.e.r + 2;
+    
+    // Добавляем заголовок отчета
+    if (metadata.title) {
+      const titleRef = xlsx.utils.encode_cell({ r: startRow, c: 0 });
+      worksheet[titleRef] = { t: 's', v: metadata.title };
+      worksheet[titleRef].s = {
+        font: { bold: true, sz: 14 },
+        alignment: { horizontal: 'left' }
+      };
+    }
+    
+    // Добавляем период отчета
+    if (metadata.dateRange || metadata.period) {
+      const periodRef = xlsx.utils.encode_cell({ r: startRow + 1, c: 0 });
+      worksheet[periodRef] = { 
+        t: 's', 
+        v: metadata.dateRange ? `Период: ${metadata.dateRange}` : `Период: ${metadata.period}` 
+      };
+    }
+    
+    // Добавляем информацию о фильтрах
+    if (metadata.filters && Object.keys(metadata.filters).length > 0) {
+      const filtersRef = xlsx.utils.encode_cell({ r: startRow + 2, c: 0 });
+      const filtersText = Object.entries(metadata.filters)
+        .map(([key, value]) => `${key}: ${value}`)
+        .join(', ');
+      
+      worksheet[filtersRef] = { t: 's', v: `Фильтры: ${filtersText}` };
+    }
+    
+    // Добавляем количество записей
+    if (metadata.count !== undefined || metadata.total !== undefined) {
+      const countRef = xlsx.utils.encode_cell({ 
+        r: metadata.filters ? startRow + 3 : startRow + 2, 
+        c: 0 
+      });
+      
+      worksheet[countRef] = { 
+        t: 's', 
+        v: metadata.count !== undefined ? 
+          `Количество записей: ${metadata.count}` : 
+          `Всего записей: ${metadata.total}` 
+      };
+    }
+    
+    // Добавляем дату создания отчета
+    if (metadata.createdAt) {
+      const dateRef = xlsx.utils.encode_cell({ 
+        r: (metadata.filters ? startRow + 4 : (metadata.count !== undefined || metadata.total !== undefined ? startRow + 3 : startRow + 2)), 
+        c: 0 
+      });
+      
+      worksheet[dateRef] = { t: 's', v: `Отчет сформирован: ${metadata.createdAt}` };
+    }
+    
+    // Обновляем диапазон данных в листе
+    const newLastRow = (metadata.filters ? startRow + 4 : (metadata.count !== undefined || metadata.total !== undefined ? startRow + 3 : startRow + 2));
+    worksheet['!ref'] = xlsx.utils.encode_range({
+      s: { r: range.s.r, c: range.s.c },
+      e: { r: newLastRow, c: range.e.c }
+    });
+  }
+
+  /**
+   * Переводит статус инцидента на русский язык
+   * @param {string} status - Статус инцидента
+   * @returns {string} Переведенный статус
+   * @private
+   */
+  _translateStatus(status) {
+    switch (status) {
+      case 'open':
+        return 'Открыт';
+      case 'in_progress':
+        return 'В работе';
+      case 'resolved':
+        return 'Решен';
+      case 'closed':
+        return 'Закрыт';
+      default:
+        return status;
+    }
+  }
+
+  /**
+   * Переводит приоритет инцидента на русский язык
+   * @param {string} priority - Приоритет инцидента
+   * @returns {string} Переведенный приоритет
+   * @private
+   */
+  _translatePriority(priority) {
+    switch (priority) {
+      case 'low':
+        return 'Низкий';
+      case 'medium':
+        return 'Средний';
+      case 'high':
+        return 'Высокий';
+      default:
+        return priority;
+    }
+  }
+
+  /**
+   * Переводит статус оборудования на русский язык
+   * @param {string} status - Статус оборудования
+   * @returns {string} Переведенный статус
+   * @private
+   */
+  _translateEquipmentStatus(status) {
+    switch (status) {
+      case 'active':
+        return 'Активно';
+      case 'maintenance':
+        return 'На обслуживании';
+      case 'decommissioned':
+        return 'Списано';
+      default:
+        return status;
+    }
+  }
+
+  /**
+   * Переводит роль пользователя на русский язык
+   * @param {string} role - Роль пользователя
+   * @returns {string} Переведенная роль
+   * @private
+   */
+  _translateRole(role) {
+    switch (role) {
+      case 'admin':
+        return 'Администратор';
+      case 'manager':
+        return 'Менеджер';
+      case 'user':
+        return 'Пользователь';
+      default:
+        return role;
+    }
+  }
+
+  /**
+   * Переводит название поля группировки на русский язык
+   * @param {string} groupBy - Поле группировки
+   * @param {boolean} isEquipment - Флаг, указывающий на тип сущности (оборудование)
+   * @returns {string} Переведенное название поля
+   * @private
+   */
+  _translateGroupBy(groupBy, isEquipment = false) {
+    if (isEquipment) {
+      switch (groupBy) {
+        case 'type':
+          return 'типу';
+        case 'status':
+          return 'статусу';
+        case 'location':
+          return 'местоположению';
+        case 'responsiblePerson':
+          return 'ответственному';
+        default:
+          return groupBy;
+      }
+    } else {
+      switch (groupBy) {
+        case 'status':
+          return 'статусу';
+        case 'priority':
+          return 'приоритету';
+        case 'category':
+          return 'категории';
+        case 'assignedTo':
+          return 'исполнителю';
+        case 'createdBy':
+          return 'создателю';
+        default:
+          return groupBy;
+      }
+    }
+  }
+
+  /**
+   * Получает ключ статуса для применения стилей
+   * @param {string} status - Статус инцидента на русском
+   * @returns {string} Ключ статуса
+   * @private
+   */
+  _getStatusKey(status) {
+    if (status.includes('открыт')) return 'open';
+    if (status.includes('работе')) return 'in_progress';
+    if (status.includes('решен')) return 'resolved';
+    if (status.includes('закрыт')) return 'closed';
+    return '';
+  }
+
+  /**
+   * Получает ключ приоритета для применения стилей
+   * @param {string} priority - Приоритет инцидента на русском
+   * @returns {string} Ключ приоритета
+   * @private
+   */
+  _getPriorityKey(priority) {
+    if (priority.includes('низк')) return 'low';
+    if (priority.includes('средн')) return 'medium';
+    if (priority.includes('высок')) return 'high';
+    return '';
+  }
+}
+
+module.exports = new ExcelService();

@@ -1,0 +1,962 @@
+const IncidentModel = require('../models/incident.model');
+const UserModel = require('../models/user.model');
+const EquipmentModel = require('../models/equipment.model');
+const NotificationService = require('../services/notification.service');
+const { validationResult } = require('express-validator');
+const mongoose = require('mongoose');
+const logger = require('../config/winston');
+
+/**
+ * Контроллер для управления инцидентами
+ */
+class IncidentController {
+  /**
+   * Создает новый инцидент
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   * @returns {Promise<void>}
+   */
+  async create(req, res) {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+      }
+
+      const { title, description, priority, equipmentId, category } = req.body;
+      const reporterId = req.user.id;
+
+      // Проверяем существование оборудования, если указан equipmentId
+      if (equipmentId) {
+        const equipment = await EquipmentModel.findById(equipmentId);
+        if (!equipment) {
+          return res.status(404).json({ message: 'Equipment not found' });
+        }
+      }
+
+      // Создаем инцидент
+      const incident = await IncidentModel.create({
+        title,
+        description,
+        priority,
+        equipmentId,
+        category,
+        reporterId,
+        status: 'new',
+        comments: [],
+        attachments: [],
+        createdAt: new Date(),
+        updatedAt: new Date()
+      });
+
+      // Обрабатываем вложения, если они есть
+      if (req.files && req.files.length > 0) {
+        const attachments = req.files.map(file => ({
+          filename: file.filename,
+          originalName: file.originalname,
+          path: file.path,
+          mimetype: file.mimetype,
+          size: file.size,
+          uploadedAt: new Date()
+        }));
+
+        incident.attachments = attachments;
+        await incident.save();
+      }
+
+      // Находим всех IT-специалистов для уведомления о новом инциденте
+      const itSpecialists = await UserModel.find({ role: 'specialist' });
+      
+      // Отправляем уведомления IT-специалистам
+      for (const specialist of itSpecialists) {
+        await NotificationService.sendNotification({
+          userId: specialist._id,
+          type: 'incident_created',
+          message: `Новый инцидент: ${title}`,
+          data: { incidentId: incident._id }
+        });
+      }
+
+      // Логируем создание инцидента
+      logger.info(`Incident created: ${incident._id} by user ${reporterId}`);
+
+      return res.status(201).json(incident);
+    } catch (error) {
+      logger.error('Error creating incident:', error);
+      return res.status(500).json({ message: 'Internal server error' });
+    }
+  }
+
+  /**
+   * Обновляет существующий инцидент
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   * @returns {Promise<void>}
+   */
+  async update(req, res) {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+      }
+
+      const { id } = req.params;
+      const { title, description, priority, category, status } = req.body;
+
+      // Проверяем валидность ID
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ message: 'Invalid incident ID' });
+      }
+
+      const incident = await IncidentModel.findById(id);
+      if (!incident) {
+        return res.status(404).json({ message: 'Incident not found' });
+      }
+
+      // Проверка прав доступа (только создатель, назначенный специалист или админ)
+      const userId = req.user.id;
+      const userRole = req.user.role;
+      
+      if (userRole !== 'admin' && 
+          incident.reporterId.toString() !== userId && 
+          (incident.assigneeId && incident.assigneeId.toString() !== userId)) {
+        return res.status(403).json({ message: 'Access denied' });
+      }
+
+      // Обновляем инцидент
+      incident.title = title || incident.title;
+      incident.description = description || incident.description;
+      incident.priority = priority || incident.priority;
+      incident.category = category || incident.category;
+      
+      // Если статус меняется, добавляем запись в историю статусов
+      if (status && status !== incident.status) {
+        if (!incident.statusHistory) {
+          incident.statusHistory = [];
+        }
+        
+        incident.statusHistory.push({
+          from: incident.status,
+          to: status,
+          changedBy: userId,
+          changedAt: new Date()
+        });
+        
+        incident.status = status;
+        
+        // Если статус меняется на "resolved" или "closed", устанавливаем дату решения
+        if (status === 'resolved' || status === 'closed') {
+          incident.resolvedAt = new Date();
+        }
+      }
+      
+      incident.updatedAt = new Date();
+
+      // Обрабатываем вложения, если они есть
+      if (req.files && req.files.length > 0) {
+        const attachments = req.files.map(file => ({
+          filename: file.filename,
+          originalName: file.originalname,
+          path: file.path,
+          mimetype: file.mimetype,
+          size: file.size,
+          uploadedAt: new Date()
+        }));
+
+        incident.attachments = [...incident.attachments, ...attachments];
+      }
+
+      await incident.save();
+
+      // Отправляем уведомления заинтересованным сторонам
+      const notifyUsers = new Set();
+      notifyUsers.add(incident.reporterId.toString());
+      if (incident.assigneeId) {
+        notifyUsers.add(incident.assigneeId.toString());
+      }
+
+      // Не отправляем уведомление пользователю, который сделал изменения
+      notifyUsers.delete(userId);
+
+      for (const notifyUserId of notifyUsers) {
+        await NotificationService.sendNotification({
+          userId: notifyUserId,
+          type: 'incident_updated',
+          message: `Инцидент обновлен: ${incident.title}`,
+          data: { incidentId: incident._id }
+        });
+      }
+
+      logger.info(`Incident updated: ${incident._id} by user ${userId}`);
+      return res.json(incident);
+    } catch (error) {
+      logger.error('Error updating incident:', error);
+      return res.status(500).json({ message: 'Internal server error' });
+    }
+  }
+
+  /**
+   * Получает все инциденты с фильтрацией и пагинацией
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   * @returns {Promise<void>}
+   */
+  async getAll(req, res) {
+    try {
+      const { 
+        page = 1, 
+        pageSize = 10, 
+        status, 
+        priority, 
+        category, 
+        assigneeId, 
+        reporterId, 
+        dateFrom, 
+        dateTo, 
+        search,
+        sort = 'createdAt',
+        order = 'desc'
+      } = req.query;
+
+      // Строим фильтр для запроса
+      const filter = {};
+      
+      // Фильтр по статусу
+      if (status) {
+        if (Array.isArray(status)) {
+          filter.status = { $in: status };
+        } else {
+          filter.status = status;
+        }
+      }
+      
+      // Фильтр по приоритету
+      if (priority) {
+        if (Array.isArray(priority)) {
+          filter.priority = { $in: priority };
+        } else {
+          filter.priority = priority;
+        }
+      }
+      
+      // Фильтр по категории
+      if (category) {
+        if (Array.isArray(category)) {
+          filter.category = { $in: category };
+        } else {
+          filter.category = category;
+        }
+      }
+      
+      // Фильтр по назначенному специалисту
+      if (assigneeId && mongoose.Types.ObjectId.isValid(assigneeId)) {
+        filter.assigneeId = assigneeId;
+      }
+      
+      // Фильтр по создателю инцидента
+      if (reporterId && mongoose.Types.ObjectId.isValid(reporterId)) {
+        filter.reporterId = reporterId;
+      }
+      
+      // Фильтр по дате создания
+      if (dateFrom || dateTo) {
+        filter.createdAt = {};
+        if (dateFrom) {
+          filter.createdAt.$gte = new Date(dateFrom);
+        }
+        if (dateTo) {
+          filter.createdAt.$lte = new Date(dateTo);
+        }
+      }
+      
+      // Поиск по заголовку или описанию
+      if (search) {
+        filter.$or = [
+          { title: { $regex: search, $options: 'i' } },
+          { description: { $regex: search, $options: 'i' } }
+        ];
+      }
+
+      // Проверяем права доступа
+      const userRole = req.user.role;
+      const userId = req.user.id;
+      
+      // Если пользователь не админ и не специалист, показываем только его инциденты
+      if (userRole !== 'admin' && userRole !== 'specialist') {
+        filter.reporterId = userId;
+      }
+
+      // Определяем порядок сортировки
+      const sortOption = {};
+      sortOption[sort] = order === 'asc' ? 1 : -1;
+
+      // Получаем общее количество инцидентов по фильтру
+      const totalCount = await IncidentModel.countDocuments(filter);
+      
+      // Получаем инциденты с пагинацией
+      const incidents = await IncidentModel.find(filter)
+        .sort(sortOption)
+        .skip((page - 1) * pageSize)
+        .limit(parseInt(pageSize))
+        .populate('reporterId', 'username firstName lastName email')
+        .populate('assigneeId', 'username firstName lastName email')
+        .populate('equipmentId', 'name inventoryNumber type status');
+      
+      return res.json({
+        incidents,
+        pagination: {
+          totalCount,
+          page: parseInt(page),
+          pageSize: parseInt(pageSize),
+          totalPages: Math.ceil(totalCount / pageSize)
+        }
+      });
+    } catch (error) {
+      logger.error('Error fetching incidents:', error);
+      return res.status(500).json({ message: 'Internal server error' });
+    }
+  }
+
+  /**
+   * Получает инцидент по ID
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   * @returns {Promise<void>}
+   */
+  async getById(req, res) {
+    try {
+      const { id } = req.params;
+      
+      // Проверяем валидность ID
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ message: 'Invalid incident ID' });
+      }
+
+      const incident = await IncidentModel.findById(id)
+        .populate('reporterId', 'username firstName lastName email')
+        .populate('assigneeId', 'username firstName lastName email')
+        .populate('equipmentId', 'name inventoryNumber type status')
+        .populate('comments.author', 'username firstName lastName');
+      
+      if (!incident) {
+        return res.status(404).json({ message: 'Incident not found' });
+      }
+
+      // Проверяем права доступа
+      const userRole = req.user.role;
+      const userId = req.user.id;
+      
+      // Если пользователь не админ и не специалист и не создатель инцидента, запрещаем доступ
+      if (userRole !== 'admin' && 
+          userRole !== 'specialist' && 
+          incident.reporterId._id.toString() !== userId) {
+        return res.status(403).json({ message: 'Access denied' });
+      }
+
+      return res.json(incident);
+    } catch (error) {
+      logger.error('Error fetching incident by ID:', error);
+      return res.status(500).json({ message: 'Internal server error' });
+    }
+  }
+
+  /**
+   * Удаляет инцидент
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   * @returns {Promise<void>}
+   */
+  async delete(req, res) {
+    try {
+      const { id } = req.params;
+      
+      // Проверяем валидность ID
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ message: 'Invalid incident ID' });
+      }
+
+      const incident = await IncidentModel.findById(id);
+      if (!incident) {
+        return res.status(404).json({ message: 'Incident not found' });
+      }
+
+      // Проверяем права доступа (только админ может удалять инциденты)
+      const userRole = req.user.role;
+      if (userRole !== 'admin') {
+        return res.status(403).json({ message: 'Access denied. Only administrators can delete incidents' });
+      }
+
+      await IncidentModel.findByIdAndDelete(id);
+      
+      logger.info(`Incident deleted: ${id} by user ${req.user.id}`);
+      return res.json({ message: 'Incident successfully deleted' });
+    } catch (error) {
+      logger.error('Error deleting incident:', error);
+      return res.status(500).json({ message: 'Internal server error' });
+    }
+  }
+
+  /**
+   * Назначает специалиста на инцидент
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   * @returns {Promise<void>}
+   */
+  async assignSpecialist(req, res) {
+    try {
+      const { id } = req.params;
+      const { assigneeId } = req.body;
+      
+      // Проверяем валидность ID
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ message: 'Invalid incident ID' });
+      }
+      
+      if (!mongoose.Types.ObjectId.isValid(assigneeId)) {
+        return res.status(400).json({ message: 'Invalid assignee ID' });
+      }
+
+      const incident = await IncidentModel.findById(id);
+      if (!incident) {
+        return res.status(404).json({ message: 'Incident not found' });
+      }
+
+      // Проверяем права доступа (только админ или специалист может назначать)
+      const userRole = req.user.role;
+      if (userRole !== 'admin' && userRole !== 'specialist') {
+        return res.status(403).json({ message: 'Access denied' });
+      }
+
+      // Проверяем существование специалиста
+      const specialist = await UserModel.findOne({ 
+        _id: assigneeId, 
+        role: 'specialist' 
+      });
+      
+      if (!specialist) {
+        return res.status(404).json({ message: 'Specialist not found' });
+      }
+
+      // Если инцидент в статусе "new", меняем его на "in_progress"
+      if (incident.status === 'new') {
+        incident.status = 'in_progress';
+        
+        // Добавляем запись в историю статусов
+        if (!incident.statusHistory) {
+          incident.statusHistory = [];
+        }
+        
+        incident.statusHistory.push({
+          from: 'new',
+          to: 'in_progress',
+          changedBy: req.user.id,
+          changedAt: new Date()
+        });
+      }
+
+      // Назначаем специалиста
+      incident.assigneeId = assigneeId;
+      incident.updatedAt = new Date();
+      
+      await incident.save();
+
+      // Отправляем уведомление назначенному специалисту
+      await NotificationService.sendNotification({
+        userId: assigneeId,
+        type: 'incident_assigned',
+        message: `Вам назначен инцидент: ${incident.title}`,
+        data: { incidentId: incident._id }
+      });
+
+      // Отправляем уведомление создателю инцидента
+      await NotificationService.sendNotification({
+        userId: incident.reporterId,
+        type: 'incident_assigned',
+        message: `На ваш инцидент назначен специалист: ${specialist.firstName} ${specialist.lastName}`,
+        data: { incidentId: incident._id }
+      });
+
+      logger.info(`Specialist assigned to incident: ${incident._id}, specialist: ${assigneeId}, by user: ${req.user.id}`);
+      return res.json(incident);
+    } catch (error) {
+      logger.error('Error assigning specialist to incident:', error);
+      return res.status(500).json({ message: 'Internal server error' });
+    }
+  }
+
+  /**
+   * Изменяет статус инцидента
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   * @returns {Promise<void>}
+   */
+  async changeStatus(req, res) {
+    try {
+      const { id } = req.params;
+      const { status, resolution } = req.body;
+      
+      // Проверяем валидность ID
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ message: 'Invalid incident ID' });
+      }
+
+      // Проверяем валидность статуса
+      const validStatuses = ['new', 'in_progress', 'on_hold', 'resolved', 'closed', 'reopened'];
+      if (!validStatuses.includes(status)) {
+        return res.status(400).json({ message: 'Invalid status value' });
+      }
+
+      const incident = await IncidentModel.findById(id);
+      if (!incident) {
+        return res.status(404).json({ message: 'Incident not found' });
+      }
+
+      // Проверяем права доступа
+      const userRole = req.user.role;
+      const userId = req.user.id;
+      
+      if (userRole !== 'admin' && 
+          (incident.assigneeId && incident.assigneeId.toString() !== userId)) {
+        return res.status(403).json({ message: 'Access denied' });
+      }
+
+      // Проверяем логику перехода статусов
+      if (status === 'resolved' || status === 'closed') {
+        if (!resolution) {
+          return res.status(400).json({ message: 'Resolution is required for resolved or closed status' });
+        }
+        incident.resolution = resolution;
+        incident.resolvedAt = new Date();
+      }
+
+      // Добавляем запись в историю статусов
+      if (!incident.statusHistory) {
+        incident.statusHistory = [];
+      }
+      
+      incident.statusHistory.push({
+        from: incident.status,
+        to: status,
+        changedBy: userId,
+        changedAt: new Date()
+      });
+
+      // Обновляем статус
+      incident.status = status;
+      incident.updatedAt = new Date();
+      
+      await incident.save();
+
+      // Отправляем уведомление создателю инцидента
+      await NotificationService.sendNotification({
+        userId: incident.reporterId,
+        type: 'incident_status_changed',
+        message: `Статус вашего инцидента изменен на: ${status}`,
+        data: { incidentId: incident._id }
+      });
+
+      logger.info(`Incident status changed: ${incident._id}, from: ${incident.statusHistory[incident.statusHistory.length - 1].from}, to: ${status}, by user: ${userId}`);
+      return res.json(incident);
+    } catch (error) {
+      logger.error('Error changing incident status:', error);
+      return res.status(500).json({ message: 'Internal server error' });
+    }
+  }
+
+  /**
+   * Добавляет комментарий к инциденту
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   * @returns {Promise<void>}
+   */
+  async addComment(req, res) {
+    try {
+      const { id } = req.params;
+      const { text, isInternal = false } = req.body;
+      const authorId = req.user.id;
+      
+      // Проверяем валидность ID
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ message: 'Invalid incident ID' });
+      }
+
+      // Проверяем текст комментария
+      if (!text || text.trim() === '') {
+        return res.status(400).json({ message: 'Comment text is required' });
+      }
+
+      const incident = await IncidentModel.findById(id);
+      if (!incident) {
+        return res.status(404).json({ message: 'Incident not found' });
+      }
+
+      // Проверяем права доступа
+      const userRole = req.user.role;
+      
+      // Внутренние комментарии могут добавлять только админы и специалисты
+      if (isInternal && userRole !== 'admin' && userRole !== 'specialist') {
+        return res.status(403).json({ message: 'Access denied. Only administrators and specialists can add internal comments' });
+      }
+
+      // Создаем комментарий
+      const comment = {
+        text,
+        author: authorId,
+        isInternal,
+        createdAt: new Date()
+      };
+
+      // Добавляем комментарий к инциденту
+      if (!incident.comments) {
+        incident.comments = [];
+      }
+      
+      incident.comments.push(comment);
+      incident.updatedAt = new Date();
+      
+      await incident.save();
+
+      // Получаем обновленный инцидент с заполненными данными автора комментария
+      const updatedIncident = await IncidentModel.findById(id)
+        .populate('comments.author', 'username firstName lastName');
+
+      // Находим добавленный комментарий
+      const addedComment = updatedIncident.comments[updatedIncident.comments.length - 1];
+
+      // Определяем получателей уведомлений
+      const notifyUsers = new Set();
+      
+      // Уведомляем создателя инцидента, если комментарий не внутренний
+      if (!isInternal) {
+        notifyUsers.add(incident.reporterId.toString());
+      }
+      
+      // Уведомляем назначенного специалиста
+      if (incident.assigneeId) {
+        notifyUsers.add(incident.assigneeId.toString());
+      }
+      
+      // Не отправляем уведомление автору комментария
+      notifyUsers.delete(authorId);
+
+      // Отправляем уведомления
+      for (const notifyUserId of notifyUsers) {
+        await NotificationService.sendNotification({
+          userId: notifyUserId,
+          type: 'incident_comment_added',
+          message: `Новый комментарий к инциденту: ${incident.title}`,
+          data: { incidentId: incident._id }
+        });
+      }
+
+      logger.info(`Comment added to incident: ${incident._id} by user: ${authorId}`);
+      return res.status(201).json(addedComment);
+    } catch (error) {
+      logger.error('Error adding comment to incident:', error);
+      return res.status(500).json({ message: 'Internal server error' });
+    }
+  }
+
+  /**
+   * Получает статистику по инцидентам
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   * @returns {Promise<void>}
+   */
+  async getStatistics(req, res) {
+    try {
+      // Проверяем права доступа (только админ или специалист)
+      const userRole = req.user.role;
+      if (userRole !== 'admin' && userRole !== 'specialist') {
+        return res.status(403).json({ message: 'Access denied' });
+      }
+
+      // Статистика по статусам
+      const statusStats = await IncidentModel.aggregate([
+        { $group: { _id: '$status', count: { $sum: 1 } } },
+        { $sort: { count: -1 } }
+      ]);
+
+      // Статистика по приоритетам
+      const priorityStats = await IncidentModel.aggregate([
+        { $group: { _id: '$priority', count: { $sum: 1 } } },
+        { $sort: { count: -1 } }
+      ]);
+
+      // Статистика по категориям
+      const categoryStats = await IncidentModel.aggregate([
+        { $group: { _id: '$category', count: { $sum: 1 } } },
+        { $sort: { count: -1 } }
+      ]);
+
+      // Статистика по времени решения (для resolved и closed инцидентов)
+      const resolutionTimeStats = await IncidentModel.aggregate([
+        { 
+          $match: { 
+            status: { $in: ['resolved', 'closed'] },
+            resolvedAt: { $exists: true }
+          } 
+        },
+        {
+          $project: {
+            resolutionTime: { 
+              $divide: [
+                { $subtract: ['$resolvedAt', '$createdAt'] },
+                3600000 // Конвертация в часы
+              ]
+            },
+            priority: 1
+          }
+        },
+        {
+          $group: {
+            _id: '$priority',
+            avgResolutionTime: { $avg: '$resolutionTime' },
+            minResolutionTime: { $min: '$resolutionTime' },
+            maxResolutionTime: { $max: '$resolutionTime' },
+            count: { $sum: 1 }
+          }
+        },
+        { $sort: { _id: 1 } }
+      ]);
+
+      // Статистика по специалистам
+      const specialistStats = await IncidentModel.aggregate([
+        { $match: { assigneeId: { $exists: true } } },
+        { $group: { _id: '$assigneeId', count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+        { $limit: 10 }
+      ]);
+
+      // Получаем имена специалистов
+      const specialistIds = specialistStats.map(stat => stat._id);
+      const specialists = await UserModel.find(
+        { _id: { $in: specialistIds } },
+        { firstName: 1, lastName: 1, username: 1 }
+      );
+
+      // Добавляем имена специалистов к статистике
+      const specialistStatsWithNames = specialistStats.map(stat => {
+        const specialist = specialists.find(s => s._id.toString() === stat._id.toString());
+        return {
+          _id: stat._id,
+          name: specialist ? `${specialist.firstName} ${specialist.lastName}` : 'Unknown',
+          username: specialist ? specialist.username : 'Unknown',
+          count: stat.count
+        };
+      });
+
+      // Статистика по инцидентам за последние 30 дней
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+      const dailyStats = await IncidentModel.aggregate([
+        { 
+          $match: { 
+            createdAt: { $gte: thirtyDaysAgo } 
+          } 
+        },
+        {
+          $group: {
+            _id: { 
+              $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } 
+            },
+            count: { $sum: 1 }
+          }
+        },
+        { $sort: { _id: 1 } }
+      ]);
+
+      return res.json({
+        statusStats,
+        priorityStats,
+        categoryStats,
+        resolutionTimeStats,
+        specialistStats: specialistStatsWithNames,
+        dailyStats
+      });
+    } catch (error) {
+      logger.error('Error fetching incident statistics:', error);
+      return res.status(500).json({ message: 'Internal server error' });
+    }
+  }
+
+  /**
+   * Загружает вложение к инциденту
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   * @returns {Promise<void>}
+   */
+  async uploadAttachment(req, res) {
+    try {
+      const { id } = req.params;
+      
+      // Проверяем валидность ID
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ message: 'Invalid incident ID' });
+      }
+
+      if (!req.file) {
+        return res.status(400).json({ message: 'No file uploaded' });
+      }
+
+      const incident = await IncidentModel.findById(id);
+      if (!incident) {
+        return res.status(404).json({ message: 'Incident not found' });
+      }
+
+      // Проверяем права доступа
+      const userRole = req.user.role;
+      const userId = req.user.id;
+      
+      if (userRole !== 'admin' && 
+          incident.reporterId.toString() !== userId && 
+          (incident.assigneeId && incident.assigneeId.toString() !== userId)) {
+        return res.status(403).json({ message: 'Access denied' });
+      }
+
+      // Создаем объект вложения
+      const attachment = {
+        filename: req.file.filename,
+        originalName: req.file.originalname,
+        path: req.file.path,
+        mimetype: req.file.mimetype,
+        size: req.file.size,
+        uploadedBy: userId,
+        uploadedAt: new Date()
+      };
+
+      // Добавляем вложение к инциденту
+      if (!incident.attachments) {
+        incident.attachments = [];
+      }
+      
+      incident.attachments.push(attachment);
+      incident.updatedAt = new Date();
+      
+      await incident.save();
+
+      logger.info(`Attachment uploaded to incident: ${incident._id} by user: ${userId}`);
+      return res.status(201).json(attachment);
+    } catch (error) {
+      logger.error('Error uploading attachment to incident:', error);
+      return res.status(500).json({ message: 'Internal server error' });
+    }
+  }
+
+  /**
+   * Скачивает вложение инцидента
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   * @returns {Promise<void>}
+   */
+  async downloadAttachment(req, res) {
+    try {
+      const { id, attachmentId } = req.params;
+      
+      // Проверяем валидность ID
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ message: 'Invalid incident ID' });
+      }
+
+      const incident = await IncidentModel.findById(id);
+      if (!incident) {
+        return res.status(404).json({ message: 'Incident not found' });
+      }
+
+      // Проверяем права доступа
+      const userRole = req.user.role;
+      const userId = req.user.id;
+      
+      if (userRole !== 'admin' && 
+          incident.reporterId.toString() !== userId && 
+          (incident.assigneeId && incident.assigneeId.toString() !== userId)) {
+        return res.status(403).json({ message: 'Access denied' });
+      }
+
+      // Находим вложение
+      const attachment = incident.attachments.find(
+        att => att._id.toString() === attachmentId
+      );
+      
+      if (!attachment) {
+        return res.status(404).json({ message: 'Attachment not found' });
+      }
+
+      // Отправляем файл
+      res.setHeader('Content-Disposition', `attachment; filename="${attachment.originalName}"`);
+      res.setHeader('Content-Type', attachment.mimetype);
+      
+      return res.download(attachment.path, attachment.originalName);
+    } catch (error) {
+      logger.error('Error downloading attachment:', error);
+      return res.status(500).json({ message: 'Internal server error' });
+    }
+  }
+
+  /**
+   * Удаляет вложение инцидента
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   * @returns {Promise<void>}
+   */
+  async deleteAttachment(req, res) {
+    try {
+      const { id, attachmentId } = req.params;
+      const fs = require('fs');
+      
+      // Проверяем валидность ID
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ message: 'Invalid incident ID' });
+      }
+
+      const incident = await IncidentModel.findById(id);
+      if (!incident) {
+        return res.status(404).json({ message: 'Incident not found' });
+      }
+
+      // Проверяем права доступа (только админ или создатель вложения)
+      const userRole = req.user.role;
+      const userId = req.user.id;
+      
+      // Находим вложение
+      const attachmentIndex = incident.attachments.findIndex(
+        att => att._id.toString() === attachmentId
+      );
+      
+      if (attachmentIndex === -1) {
+        return res.status(404).json({ message: 'Attachment not found' });
+      }
+
+      const attachment = incident.attachments[attachmentIndex];
+      
+      // Проверяем права на удаление
+      if (userRole !== 'admin' && 
+          attachment.uploadedBy.toString() !== userId) {
+        return res.status(403).json({ message: 'Access denied' });
+      }
+
+      // Удаляем файл с диска
+      try {
+        fs.unlinkSync(attachment.path);
+      } catch (err) {
+        logger.warn(`Failed to delete attachment file: ${attachment.path}`, err);
+        // Продолжаем выполнение даже если файл не удалось удалить
+      }
+
+      // Удаляем вложение из инцидента
+      incident.attachments.splice(attachmentIndex, 1);
+      incident.updatedAt = new Date();
+      
+      await incident.save();
+
+      logger.info(`Attachment deleted from incident: ${incident._id}, attachment: ${attachmentId}, by user: ${userId}`);
+      return res.json({ message: 'Attachment successfully deleted' });
+    } catch (error) {
+      logger.error('Error deleting attachment:', error);
+      return res.status(500).json({ message: 'Internal server error' });
+    }
+  }
+}
+
+module.exports = new IncidentController();

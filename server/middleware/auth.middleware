@@ -1,0 +1,210 @@
+const jwt = require('jsonwebtoken');
+const config = require('../config/config');
+const UserModel = require('../models/user.model');
+const { AuthenticationError } = require('../utils/errors');
+
+/**
+ * Middleware для проверки JWT токена и аутентификации пользователя
+ * Извлекает токен из заголовка Authorization, проверяет его валидность
+ * и добавляет информацию о пользователе в объект запроса
+ * 
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {Function} next - Express next middleware function
+ */
+const authMiddleware = async (req, res, next) => {
+  try {
+    // Получение токена из заголовка
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader) {
+      throw new AuthenticationError('Отсутствует токен авторизации');
+    }
+
+    // Проверка формата токена (Bearer <token>)
+    const tokenParts = authHeader.split(' ');
+    
+    if (tokenParts.length !== 2 || tokenParts[0] !== 'Bearer') {
+      throw new AuthenticationError('Неверный формат токена');
+    }
+
+    const token = tokenParts[1];
+    
+    // Верификация токена
+    try {
+      const decoded = jwt.verify(token, config.jwt.secret);
+      
+      // Проверка срока действия токена
+      const currentTime = Math.floor(Date.now() / 1000);
+      if (decoded.exp && decoded.exp < currentTime) {
+        throw new AuthenticationError('Срок действия токена истек');
+      }
+      
+      // Проверка существования пользователя в базе данных
+      const user = await UserModel.findById(decoded.id).select('-password');
+      
+      if (!user) {
+        throw new AuthenticationError('Пользователь не найден');
+      }
+      
+      // Добавление информации о пользователе в объект запроса
+      req.user = {
+        id: user._id,
+        email: user.email,
+        username: user.username,
+        role: user.role,
+        firstName: user.firstName,
+        lastName: user.lastName
+      };
+      
+      next();
+    } catch (error) {
+      if (error instanceof AuthenticationError) {
+        throw error;
+      } else if (error.name === 'TokenExpiredError') {
+        throw new AuthenticationError('Срок действия токена истек');
+      } else if (error.name === 'JsonWebTokenError') {
+        throw new AuthenticationError('Недействительный токен');
+      } else {
+        throw new AuthenticationError('Ошибка аутентификации');
+      }
+    }
+  } catch (error) {
+    if (error instanceof AuthenticationError) {
+      return res.status(401).json({ 
+        success: false,
+        message: error.message 
+      });
+    }
+    
+    return res.status(500).json({ 
+      success: false,
+      message: 'Внутренняя ошибка сервера при аутентификации' 
+    });
+  }
+};
+
+/**
+ * Middleware для опциональной аутентификации
+ * Работает как authMiddleware, но не возвращает ошибку при отсутствии токена
+ * 
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {Function} next - Express next middleware function
+ */
+const optionalAuthMiddleware = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader) {
+      // Если токен отсутствует, просто продолжаем без аутентификации
+      return next();
+    }
+
+    const tokenParts = authHeader.split(' ');
+    
+    if (tokenParts.length !== 2 || tokenParts[0] !== 'Bearer') {
+      // Если формат токена неверный, просто продолжаем без аутентификации
+      return next();
+    }
+
+    const token = tokenParts[1];
+    
+    try {
+      const decoded = jwt.verify(token, config.jwt.secret);
+      const user = await UserModel.findById(decoded.id).select('-password');
+      
+      if (user) {
+        req.user = {
+          id: user._id,
+          email: user.email,
+          username: user.username,
+          role: user.role,
+          firstName: user.firstName,
+          lastName: user.lastName
+        };
+      }
+      
+      next();
+    } catch (error) {
+      // В случае ошибки проверки токена просто продолжаем без аутентификации
+      next();
+    }
+  } catch (error) {
+    next();
+  }
+};
+
+/**
+ * Middleware для обновления токена
+ * Проверяет refresh token и генерирует новый access token
+ * 
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {Function} next - Express next middleware function
+ */
+const refreshTokenMiddleware = async (req, res, next) => {
+  try {
+    const { refreshToken } = req.body;
+    
+    if (!refreshToken) {
+      throw new AuthenticationError('Отсутствует refresh token');
+    }
+    
+    // Верификация refresh token
+    try {
+      const decoded = jwt.verify(refreshToken, config.jwt.refreshSecret);
+      
+      // Проверка существования пользователя и валидности refresh token
+      const user = await UserModel.findOne({ 
+        _id: decoded.id,
+        refreshToken: refreshToken 
+      }).select('-password');
+      
+      if (!user) {
+        throw new AuthenticationError('Недействительный refresh token');
+      }
+      
+      // Генерация нового access token
+      const newAccessToken = jwt.sign(
+        { 
+          id: user._id,
+          email: user.email,
+          role: user.role 
+        },
+        config.jwt.secret,
+        { expiresIn: config.jwt.expiresIn }
+      );
+      
+      // Отправка нового access token
+      return res.status(200).json({
+        success: true,
+        accessToken: newAccessToken
+      });
+    } catch (error) {
+      if (error.name === 'TokenExpiredError') {
+        throw new AuthenticationError('Срок действия refresh token истек');
+      } else {
+        throw new AuthenticationError('Недействительный refresh token');
+      }
+    }
+  } catch (error) {
+    if (error instanceof AuthenticationError) {
+      return res.status(401).json({ 
+        success: false,
+        message: error.message 
+      });
+    }
+    
+    return res.status(500).json({ 
+      success: false,
+      message: 'Внутренняя ошибка сервера при обновлении токена' 
+    });
+  }
+};
+
+module.exports = {
+  authMiddleware,
+  optionalAuthMiddleware,
+  refreshTokenMiddleware
+};

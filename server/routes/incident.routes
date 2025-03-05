@@ -1,0 +1,331 @@
+const express = require('express');
+const router = express.Router();
+const incidentController = require('../controllers/incident.controller');
+const authMiddleware = require('../middleware/auth.middleware');
+const roleMiddleware = require('../middleware/role.middleware');
+const validationMiddleware = require('../middleware/validation.middleware');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+const { body, param, query } = require('express-validator');
+
+// Настройка хранилища для загрузки файлов
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const uploadDir = path.join(__dirname, '../uploads/incidents');
+    
+    // Создаем директорию, если она не существует
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const fileExt = path.extname(file.originalname);
+    cb(null, `incident-${uniqueSuffix}${fileExt}`);
+  }
+});
+
+// Фильтр файлов
+const fileFilter = (req, file, cb) => {
+  // Разрешенные типы файлов
+  const allowedTypes = [
+    'image/jpeg', 'image/png', 'image/gif', 
+    'application/pdf', 
+    'application/msword', 
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.ms-excel',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'text/plain'
+  ];
+  
+  if (allowedTypes.includes(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(new Error('Неподдерживаемый тип файла. Разрешены только изображения, PDF, документы Word, Excel и текстовые файлы.'), false);
+  }
+};
+
+// Настройка загрузки файлов
+const upload = multer({ 
+  storage: storage, 
+  fileFilter: fileFilter,
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10MB максимальный размер файла
+    files: 5 // максимум 5 файлов за раз
+  }
+});
+
+// Валидация для создания инцидента
+const createIncidentValidation = [
+  body('title')
+    .trim()
+    .isLength({ min: 5, max: 100 })
+    .withMessage('Название должно содержать от 5 до 100 символов'),
+  body('description')
+    .trim()
+    .isLength({ min: 10 })
+    .withMessage('Описание должно содержать минимум 10 символов'),
+  body('priority')
+    .isIn(['low', 'medium', 'high', 'critical'])
+    .withMessage('Приоритет должен быть одним из: low, medium, high, critical'),
+  body('category')
+    .isIn(['hardware', 'software', 'network', 'security', 'other'])
+    .withMessage('Категория должна быть одной из: hardware, software, network, security, other'),
+  body('equipmentId')
+    .optional()
+    .isMongoId()
+    .withMessage('Некорректный ID оборудования')
+];
+
+// Валидация для обновления инцидента
+const updateIncidentValidation = [
+  param('id')
+    .isMongoId()
+    .withMessage('Некорректный ID инцидента'),
+  body('title')
+    .optional()
+    .trim()
+    .isLength({ min: 5, max: 100 })
+    .withMessage('Название должно содержать от 5 до 100 символов'),
+  body('description')
+    .optional()
+    .trim()
+    .isLength({ min: 10 })
+    .withMessage('Описание должно содержать минимум 10 символов'),
+  body('priority')
+    .optional()
+    .isIn(['low', 'medium', 'high', 'critical'])
+    .withMessage('Приоритет должен быть одним из: low, medium, high, critical'),
+  body('category')
+    .optional()
+    .isIn(['hardware', 'software', 'network', 'security', 'other'])
+    .withMessage('Категория должна быть одной из: hardware, software, network, security, other')
+];
+
+// Валидация для изменения статуса инцидента
+const updateStatusValidation = [
+  param('id')
+    .isMongoId()
+    .withMessage('Некорректный ID инцидента'),
+  body('status')
+    .isIn(['new', 'assigned', 'in_progress', 'on_hold', 'resolved', 'closed', 'reopened'])
+    .withMessage('Статус должен быть одним из: new, assigned, in_progress, on_hold, resolved, closed, reopened')
+];
+
+// Валидация для назначения инцидента
+const assignIncidentValidation = [
+  param('id')
+    .isMongoId()
+    .withMessage('Некорректный ID инцидента'),
+  body('assigneeId')
+    .isMongoId()
+    .withMessage('Некорректный ID специалиста')
+];
+
+// Валидация для добавления комментария
+const addCommentValidation = [
+  param('id')
+    .isMongoId()
+    .withMessage('Некорректный ID инцидента'),
+  body('text')
+    .trim()
+    .isLength({ min: 1, max: 1000 })
+    .withMessage('Комментарий должен содержать от 1 до 1000 символов'),
+  body('isInternal')
+    .optional()
+    .isBoolean()
+    .withMessage('isInternal должен быть булевым значением')
+];
+
+// Валидация для получения инцидентов с фильтрацией
+const getIncidentsValidation = [
+  query('page')
+    .optional()
+    .isInt({ min: 1 })
+    .withMessage('Страница должна быть положительным числом'),
+  query('pageSize')
+    .optional()
+    .isInt({ min: 1, max: 100 })
+    .withMessage('Размер страницы должен быть от 1 до 100'),
+  query('status')
+    .optional()
+    .custom((value) => {
+      const statuses = Array.isArray(value) ? value : [value];
+      const validStatuses = ['new', 'assigned', 'in_progress', 'on_hold', 'resolved', 'closed', 'reopened'];
+      return statuses.every(status => validStatuses.includes(status));
+    })
+    .withMessage('Статус должен быть одним из: new, assigned, in_progress, on_hold, resolved, closed, reopened'),
+  query('priority')
+    .optional()
+    .custom((value) => {
+      const priorities = Array.isArray(value) ? value : [value];
+      const validPriorities = ['low', 'medium', 'high', 'critical'];
+      return priorities.every(priority => validPriorities.includes(priority));
+    })
+    .withMessage('Приоритет должен быть одним из: low, medium, high, critical'),
+  query('category')
+    .optional()
+    .custom((value) => {
+      const categories = Array.isArray(value) ? value : [value];
+      const validCategories = ['hardware', 'software', 'network', 'security', 'other'];
+      return categories.every(category => validCategories.includes(category));
+    })
+    .withMessage('Категория должна быть одной из: hardware, software, network, security, other'),
+  query('assigneeId')
+    .optional()
+    .isMongoId()
+    .withMessage('Некорректный ID специалиста'),
+  query('reporterId')
+    .optional()
+    .isMongoId()
+    .withMessage('Некорректный ID заявителя'),
+  query('dateFrom')
+    .optional()
+    .isISO8601()
+    .withMessage('Некорректный формат даты начала (ISO 8601)'),
+  query('dateTo')
+    .optional()
+    .isISO8601()
+    .withMessage('Некорректный формат даты окончания (ISO 8601)'),
+  query('search')
+    .optional()
+    .isString()
+    .withMessage('Поисковый запрос должен быть строкой')
+];
+
+// Маршруты для инцидентов
+// Получение всех инцидентов с фильтрацией и пагинацией
+router.get(
+  '/',
+  authMiddleware,
+  getIncidentsValidation,
+  validationMiddleware,
+  incidentController.getAll
+);
+
+// Получение инцидента по ID
+router.get(
+  '/:id',
+  authMiddleware,
+  param('id').isMongoId().withMessage('Некорректный ID инцидента'),
+  validationMiddleware,
+  incidentController.getById
+);
+
+// Создание нового инцидента
+router.post(
+  '/',
+  authMiddleware,
+  upload.array('attachments', 5),
+  createIncidentValidation,
+  validationMiddleware,
+  incidentController.create
+);
+
+// Обновление инцидента
+router.put(
+  '/:id',
+  authMiddleware,
+  updateIncidentValidation,
+  validationMiddleware,
+  incidentController.update
+);
+
+// Изменение статуса инцидента
+router.patch(
+  '/:id/status',
+  authMiddleware,
+  roleMiddleware(['specialist', 'admin']),
+  updateStatusValidation,
+  validationMiddleware,
+  incidentController.updateStatus
+);
+
+// Назначение инцидента специалисту
+router.patch(
+  '/:id/assign',
+  authMiddleware,
+  roleMiddleware(['specialist', 'admin']),
+  assignIncidentValidation,
+  validationMiddleware,
+  incidentController.assignIncident
+);
+
+// Добавление комментария к инциденту
+router.post(
+  '/:id/comments',
+  authMiddleware,
+  addCommentValidation,
+  validationMiddleware,
+  incidentController.addComment
+);
+
+// Добавление вложения к инциденту
+router.post(
+  '/:id/attachments',
+  authMiddleware,
+  param('id').isMongoId().withMessage('Некорректный ID инцидента'),
+  upload.array('attachments', 5),
+  validationMiddleware,
+  incidentController.addAttachments
+);
+
+// Получение вложения инцидента
+router.get(
+  '/:id/attachments/:attachmentId',
+  authMiddleware,
+  param('id').isMongoId().withMessage('Некорректный ID инцидента'),
+  param('attachmentId').isMongoId().withMessage('Некорректный ID вложения'),
+  validationMiddleware,
+  incidentController.getAttachment
+);
+
+// Удаление вложения инцидента
+router.delete(
+  '/:id/attachments/:attachmentId',
+  authMiddleware,
+  param('id').isMongoId().withMessage('Некорректный ID инцидента'),
+  param('attachmentId').isMongoId().withMessage('Некорректный ID вложения'),
+  validationMiddleware,
+  incidentController.deleteAttachment
+);
+
+// Получение истории изменений инцидента
+router.get(
+  '/:id/history',
+  authMiddleware,
+  param('id').isMongoId().withMessage('Некорректный ID инцидента'),
+  validationMiddleware,
+  incidentController.getHistory
+);
+
+// Получение статистики по инцидентам (только для админов и специалистов)
+router.get(
+  '/stats/summary',
+  authMiddleware,
+  roleMiddleware(['specialist', 'admin']),
+  incidentController.getStatistics
+);
+
+// Получение метрик производительности по инцидентам (только для админов)
+router.get(
+  '/stats/performance',
+  authMiddleware,
+  roleMiddleware(['admin']),
+  incidentController.getPerformanceMetrics
+);
+
+// Экспорт инцидентов в CSV/Excel (только для админов)
+router.get(
+  '/export/:format',
+  authMiddleware,
+  roleMiddleware(['admin']),
+  param('format').isIn(['csv', 'excel']).withMessage('Формат должен быть csv или excel'),
+  validationMiddleware,
+  incidentController.exportIncidents
+);
+
+module.exports = router;
